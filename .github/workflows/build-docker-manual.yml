@@ -1,0 +1,55 @@
+name: build-docker-manual
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Target platforms (comma-separated)"
+        required: false
+        default: "linux/amd64"
+      extra_tag:
+        description: "Extra image tag (e.g. a patch name); leave empty for none"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write # to publish to ghcr.io
+
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # tags:
+          #   <branch>          e.g. qoherent-main
+          #   <short-sha>       e.g. 146cc3eec5
+          #   latest            only when running on the default branch
+          #   <extra_tag>       only when the input is set
+          tags: |
+            type=ref,event=branch
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value={{inputs.extra_tag}},enable={{inputs.extra_tag != ''}}
+          annotations: |
+            org.opencontainers.image.authors="qoherent"
+      - name: Login to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build and push container image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          annotations: ${{ steps.meta.outputs.annotations }}
