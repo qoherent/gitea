@@ -35,6 +35,10 @@ env:
   UPSTREAM_BRANCH: ${{ inputs.upstream_branch || vars.UPSTREAM_BRANCH || 'release/v1.27' }}
   MERGE_BRANCH: upstream-merge
   CONFLICT_LABEL: upstream-conflict
+  # A fully green merge goes to main on its own. Set the AUTO_MERGE
+  # repository variable to `false` to get a pull request every time instead.
+  # Anything short of fully green opens one regardless of this.
+  AUTO_MERGE: ${{ vars.AUTO_MERGE || 'true' }}
 
 jobs:
   merge:
@@ -167,11 +171,17 @@ jobs:
             || { echo "::error::OAuth scope widening is gone from models/auth/"; exit 1; }
           echo "both present"
 
+      - run: make deps-backend
+        if: steps.merge.outputs.clean == 'true'
+
       - name: Build
         if: steps.merge.outputs.clean == 'true'
+        env:
+          TAGS: bindata gogit
+          GOEXPERIMENT:
         run: make backend
 
-      - name: This fork's own tests
+      - name: This fork's own packages
         if: steps.merge.outputs.clean == 'true'
         # TZ=UTC because two upstream content tests compare a zoneless
         # timestamp against time.Local and fail anywhere but UTC.
@@ -181,25 +191,69 @@ jobs:
           go test -tags 'sqlite sqlite_unlock_notify' -count=1 \
             ./models/auth/... ./routers/api/v1/repo/... ./services/repository/files/...
 
-      - name: Open the pull request
+      # The gate for anything unattended. A merge that compiles can still
+      # change behaviour, and this branch is what every RiaHub deployment is
+      # built from -- so the whole suite runs, not the three packages this
+      # fork happens to touch. Allowed to fail: a failure means somebody reads
+      # a pull request, not that the week's upstream fixes are dropped.
+      - name: The whole integration suite
+        id: suite
+        if: steps.merge.outputs.clean == 'true'
+        continue-on-error: true
+        timeout-minutes: 50
+        env:
+          GITEA_TEST_DATABASE: sqlite
+          GOTEST_FLAGS: -timeout=40m
+          TAGS: bindata gogit
+          GOEXPERIMENT:
+          TZ: UTC
+        run: make test-integration
+
+      - name: Ship it, or ask somebody
         if: steps.merge.outputs.clean == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           UPSTREAM_HEAD: ${{ steps.fetch.outputs.head }}
           BEHIND: ${{ steps.fetch.outputs.behind }}
+          SUITE: ${{ steps.suite.outcome }}
         run: |
           set -euo pipefail
-          git push --force-with-lease origin "$MERGE_BRANCH"
-          existing=$(gh pr list --head "$MERGE_BRANCH" --state open \
-            --json number --jq '.[0].number // empty')
-          body="Merges **$BEHIND commit(s)** from \`upstream/$UPSTREAM_BRANCH\` (\`$UPSTREAM_HEAD\`).
+          summary="Merges **$BEHIND commit(s)** from \`upstream/$UPSTREAM_BRANCH\` (\`$UPSTREAM_HEAD\`)."
 
-          The merge was clean, it builds, and both capabilities RiaHub depends on are
-          still there. A human still presses the button: upstream can change behaviour
-          without changing a signature, and this fork is what every RiaHub deployment
-          runs.
+          if [ "$SUITE" = "success" ] && [ "$AUTO_MERGE" = "true" ]; then
+            # The first parent is what main was a moment ago, which is the
+            # whole of the undo instruction.
+            previous=$(git rev-parse --short=10 HEAD^1)
+            git push origin "HEAD:main"
+            {
+              echo "### Merged to main"
+              echo ""
+              echo "$summary"
+              echo ""
+              echo "Clean merge, builds, both RiaHub capabilities present, whole"
+              echo "integration suite green."
+              echo ""
+              echo "To undo: \`git push --force-with-lease origin $previous:main\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "main is now $(git rev-parse --short=10 HEAD); it was $previous"
+            exit 0
+          fi
+
+          # Not green, or auto-merge turned off: somebody decides.
+          git push --force-with-lease origin "$MERGE_BRANCH"
+          if [ "$SUITE" = "success" ]; then
+            why="Auto-merge is off (\`AUTO_MERGE\` is not \`true\`), so this is waiting for you."
+          else
+            why="**The integration suite did not pass**, so this was not merged on its own.
+          The merge is clean and it builds; the suite is the part that wants reading."
+          fi
+          body="$summary
+
+          $why
 
           _Opened by the weekly upstream merge._"
+          existing=$(gh pr list --head "$MERGE_BRANCH" --state open \
+            --json number --jq '.[0].number // empty')
           if [ -n "$existing" ]; then
             gh pr edit "$existing" --body "$body"
             echo "updated PR #$existing"
@@ -207,3 +261,4 @@ jobs:
             gh pr create --base main --head "$MERGE_BRANCH" \
               --title "Merge upstream/$UPSTREAM_BRANCH ($UPSTREAM_HEAD)" --body "$body"
           fi
+          [ "$SUITE" = "success" ] || exit 1
