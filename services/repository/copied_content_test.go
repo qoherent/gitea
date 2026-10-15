@@ -142,10 +142,10 @@ func TestCopiedContentModes(t *testing.T) {
 	gitcmd("add", ".")
 	gitcmd("commit", "-qm", "mode reproduction")
 	sha := gitcmd("rev-parse", "HEAD")
-	repo, err := git.OpenRepository(t.Context(), dir)
+	repo, err := git.OpenRepositoryLocal(t.Context(), dir)
 	require.NoError(t, err)
 	defer repo.Close()
-	commit, err := repo.GetCommit(sha)
+	commit, err := repo.GetCommit(t.Context(), sha)
 	require.NoError(t, err)
 	_, err = git_model.NewLFSMetaObject(t.Context(), 1, pointer)
 	require.NoError(t, err)
@@ -158,41 +158,41 @@ func TestCopiedContentModes(t *testing.T) {
 				if representation == CopiedContentRepresentationLFS {
 					destination += "-lfs"
 				}
-				_, _, err := prepareCopiedFile(t.Context(), destModel, sourceModel, commit, commit, CopiedContentFileMapping{SourcePath: name, DestinationPath: destination, Representation: representation}, 0)
+				_, _, err := prepareCopiedFile(t.Context(), repo, repo, destModel, sourceModel, commit, commit, CopiedContentFileMapping{SourcePath: name, DestinationPath: destination, Representation: representation}, 0)
 				require.NoError(t, err)
 			}
 		})
 	}
 	t.Run("symlink", func(t *testing.T) {
-		_, _, err := prepareCopiedFile(t.Context(), destModel, sourceModel, commit, commit, CopiedContentFileMapping{SourcePath: "symlink", DestinationPath: "symlink", Representation: CopiedContentRepresentationGit}, 0)
+		_, _, err := prepareCopiedFile(t.Context(), repo, repo, destModel, sourceModel, commit, commit, CopiedContentFileMapping{SourcePath: "symlink", DestinationPath: "symlink", Representation: CopiedContentRepresentationGit}, 0)
 		var failure *CopiedContentError
 		require.ErrorAs(t, err, &failure)
 		assert.Equal(t, http.StatusUnprocessableEntity, failure.Status)
 	})
 	t.Run("preserved_executable_mode_should_succeed", func(t *testing.T) {
-		_, _, err := prepareCopiedFile(t.Context(), destModel, sourceModel, commit, commit,
+		_, _, err := prepareCopiedFile(t.Context(), repo, repo, destModel, sourceModel, commit, commit,
 			CopiedContentFileMapping{SourcePath: "source.sh", DestinationPath: "pointer-exec", Representation: CopiedContentRepresentationLFS}, 0)
 		if err != nil {
 			t.Errorf("valid 100755 -> 100755 regular-to-LFS copy rejected: %v", err)
 		}
 	})
 	t.Run("existing_lfs_executable", func(t *testing.T) {
-		_, _, err := prepareCopiedFile(t.Context(), destModel, sourceModel, commit, commit,
+		_, _, err := prepareCopiedFile(t.Context(), repo, repo, destModel, sourceModel, commit, commit,
 			CopiedContentFileMapping{SourcePath: "pointer-exec", DestinationPath: "pointer-exec", Representation: CopiedContentRepresentationLFS}, 0)
 		require.NoError(t, err)
 	})
 	t.Run("existing_lfs_mode_downgrade", func(t *testing.T) {
-		_, _, err := prepareCopiedFile(t.Context(), destModel, sourceModel, commit, commit,
+		_, _, err := prepareCopiedFile(t.Context(), repo, repo, destModel, sourceModel, commit, commit,
 			CopiedContentFileMapping{SourcePath: "pointer-exec", DestinationPath: "pointer-plain", Representation: CopiedContentRepresentationLFS}, 0)
 		require.Error(t, err)
 	})
 	t.Run("git_executable", func(t *testing.T) {
-		_, _, err := prepareCopiedFile(t.Context(), destModel, sourceModel, commit, commit,
+		_, _, err := prepareCopiedFile(t.Context(), repo, repo, destModel, sourceModel, commit, commit,
 			CopiedContentFileMapping{SourcePath: "source.sh", DestinationPath: "source.sh", Representation: CopiedContentRepresentationGit}, 0)
 		require.NoError(t, err)
 	})
 	t.Run("mode_downgrade_should_fail", func(t *testing.T) {
-		_, _, err := prepareCopiedFile(t.Context(), destModel, sourceModel, commit, commit,
+		_, _, err := prepareCopiedFile(t.Context(), repo, repo, destModel, sourceModel, commit, commit,
 			CopiedContentFileMapping{SourcePath: "source.sh", DestinationPath: "pointer-plain", Representation: CopiedContentRepresentationLFS}, 0)
 		if err == nil {
 			t.Error("100755 -> 100644 mode downgrade accepted")
@@ -255,39 +255,39 @@ func TestCopiedContentPublicationProof(t *testing.T) {
 	run("add", ".")
 	run("commit", "-qm", "root")
 	rootID := run("rev-parse", "HEAD")
-	repo, err := git.OpenRepository(t.Context(), dir)
+	repo, err := git.OpenRepositoryLocal(t.Context(), dir)
 	require.NoError(t, err)
 	defer repo.Close()
-	root, err := repo.GetCommit(rootID)
+	root, err := repo.GetCommit(t.Context(), rootID)
 	require.NoError(t, err)
 	model := &repo_model.Repository{ObjectFormatName: "sha1"}
 	require.NoError(t, requireCommitParent(root, nil, model))
-	require.NoError(t, requireExactCreates(repo, root, []CopiedContentFileMapping{{DestinationPath: "first"}}))
-	require.Error(t, requireExactCreates(repo, root, []CopiedContentFileMapping{{DestinationPath: "other"}}))
+	require.NoError(t, requireExactCreates(t.Context(), repo, root, []CopiedContentFileMapping{{DestinationPath: "first"}}))
+	require.Error(t, requireExactCreates(t.Context(), repo, root, []CopiedContentFileMapping{{DestinationPath: "other"}}))
 	require.NoError(t, os.WriteFile(dir+"/second", []byte("second"), 0o755))
 	run("add", ".")
 	run("commit", "-qm", "copy")
 	copyID := run("rev-parse", "HEAD")
-	copied, err := repo.GetCommit(copyID)
+	copied, err := repo.GetCommit(t.Context(), copyID)
 	require.NoError(t, err)
 	require.NoError(t, requireCommitParent(copied, &rootID, model))
 	require.Error(t, requireCommitParent(copied, nil, model))
-	require.NoError(t, requireExactCreates(repo, copied, []CopiedContentFileMapping{{DestinationPath: "second"}}))
-	require.Error(t, requireExactCreates(repo, copied, []CopiedContentFileMapping{{DestinationPath: "first"}, {DestinationPath: "second"}}))
+	require.NoError(t, requireExactCreates(t.Context(), repo, copied, []CopiedContentFileMapping{{DestinationPath: "second"}}))
+	require.Error(t, requireExactCreates(t.Context(), repo, copied, []CopiedContentFileMapping{{DestinationPath: "first"}, {DestinationPath: "second"}}))
 	require.NoError(t, os.WriteFile(dir+"/first", []byte("changed"), 0o644))
 	run("add", ".")
 	run("commit", "-qm", "later update")
-	later, err := repo.GetCommit(run("rev-parse", "HEAD"))
+	later, err := repo.GetCommit(t.Context(), run("rev-parse", "HEAD"))
 	require.NoError(t, err)
-	require.Error(t, requireExactCreates(repo, later, []CopiedContentFileMapping{{DestinationPath: "first"}}))
-	require.NoError(t, requireCommitOnBranch(repo, "main", copied))
+	require.Error(t, requireExactCreates(t.Context(), repo, later, []CopiedContentFileMapping{{DestinationPath: "first"}}))
+	require.NoError(t, requireCommitOnBranch(t.Context(), repo, "main", copied))
 	run("reset", "--hard", rootID)
 	var failure *CopiedContentError
-	require.ErrorAs(t, requireCommitOnBranch(repo, "main", copied), &failure)
+	require.ErrorAs(t, requireCommitOnBranch(t.Context(), repo, "main", copied), &failure)
 	assert.Equal(t, http.StatusConflict, failure.Status)
 	run("checkout", "--detach")
 	run("branch", "-D", "main")
-	require.ErrorAs(t, requireCommitOnBranch(repo, "main", copied), &failure)
+	require.ErrorAs(t, requireCommitOnBranch(t.Context(), repo, "main", copied), &failure)
 	assert.Equal(t, http.StatusConflict, failure.Status)
 	// Repository diff preferences must not hide a changed gitlink from the proof.
 	run("update-index", "--add", "--cacheinfo", "160000,"+rootID+",module")
@@ -297,9 +297,9 @@ func TestCopiedContentPublicationProof(t *testing.T) {
 	run("add", "third")
 	run("commit", "-qm", "extra gitlink modification")
 	run("config", "diff.ignoreSubmodules", "all")
-	changed, err := repo.GetCommit(run("rev-parse", "HEAD"))
+	changed, err := repo.GetCommit(t.Context(), run("rev-parse", "HEAD"))
 	require.NoError(t, err)
-	require.Error(t, requireExactCreates(repo, changed, []CopiedContentFileMapping{{DestinationPath: "third"}}))
+	require.Error(t, requireExactCreates(t.Context(), repo, changed, []CopiedContentFileMapping{{DestinationPath: "third"}}))
 }
 
 func TestCopiedContentDiffLimit(t *testing.T) {
