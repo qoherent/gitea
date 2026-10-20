@@ -1,0 +1,121 @@
+component PrivilegedCompute {
+  goal {
+    Let an organization's members run Actions jobs on hardware the instance
+    owns -- a GPU box, a capture rig -- without that hardware becoming
+    reachable by anyone who can push a workflow.
+
+    Gitea hands a job to a runner by matching `runs-on` against the runner's
+    labels, and a runner declares its own labels. Nothing else decides. On an
+    instance with open self-registration that means a machine is reachable by
+    anyone who can create a repository, which is acceptable for throwaway CI
+    capacity and not for a machine that sits on the internal network and holds
+    model weights.
+  }
+
+  state {
+    Two boolean columns, both defaulting to false so that applying this
+    changes nothing until somebody deliberately sets one.
+
+    `action_runner.privileged_compute` marks a runner as privileged. Only a
+    site admin may set it.
+
+    `team.org_privileged_compute` is the grant. A user holds it through
+    membership of any team in the organization carrying the flag, so it is
+    revoked by leaving that team rather than by leaving the organization.
+
+    Neither column is declared by a migration. Both are registered models, so
+    SyncAllTables adds the column at startup from the struct definition. That
+    is deliberate: an entry in Gitea's version table is a line in a file
+    upstream edits constantly, so it conflicts on every merge, and the number
+    it claims means something different on this instance than the same number
+    does upstream. The two forks of this codebase already both assigned v318,
+    to different migrations.
+  }
+
+  logic {
+    A job reaches a privileged runner only if the user who triggered the run
+    holds the grant in the runner's owning organization. The check is a
+    subquery on the dispatch condition, so an ineligible job is never
+    considered rather than being considered and rejected.
+
+    A privileged runner with no owning organization takes no job at all. The
+    grant is per-organization, so such a runner has nothing to check against;
+    failing closed keeps a row that arrived by a path other than the edit
+    form from dispatching anyway.
+
+    A label held by a privileged runner is reserved to privileged runners of
+    the same organization. The reservation is instance-wide, because a global
+    runner takes jobs from every repository and a narrower scope would leave
+    the interception open.
+  }
+
+  constraints {
+    The grant is never given to the owner team automatically, unlike the
+    other organization-wide flags. Privileged runners execute on the
+    instance's own hardware, so the grant is always a deliberate act.
+
+    Dispatch is the only place this can be enforced. It is the one point at
+    which a job is bound to a runner; any gate before it governs a value the
+    runner or the submitter supplies, and can be routed around by committing
+    a workflow and pushing.
+
+    The reserved-label filter runs at registration and at declaration and
+    again at match time. A runner that claimed a reserved label at
+    registration and never declared would otherwise keep it, and a row that
+    gained one by some other route would still be matched against it.
+  }
+
+  cases {
+    An unprivileged runner declaring a privileged runner's label keeps every
+    other label and loses that one, with a warning naming what was dropped.
+
+    A privileged runner of the owning organization keeps the label, because
+    it is the machine the work was meant for.
+
+    A run triggered by a user without the grant is invisible to a privileged
+    runner, however the labels match.
+  }
+
+  interface {
+    ActionRunner.PrivilegedCompute, the mark. Team.OrgPrivilegedCompute, the
+    grant. organization.OrgPrivilegedCompute(ctx, orgID, uid) answers whether
+    one user holds it. actions.FilterReservedLabels(ctx, runner, labels)
+    returns the labels a runner may keep and those it may not.
+  }
+
+  decisions {
+    ColumnsWithoutMigrations {
+      Decision: Add both columns through the registered struct definitions and
+      SyncAllTables, declaring no migration and taking no version number.
+
+      Scope: Governs how this feature reaches the schema, and is the pattern
+      for any further schema this fork adds.
+
+      Design issues addressed: Gitea's migration list is a single file upstream
+      appends to on nearly every release. An entry there conflicts on every
+      merge, and the version number it claims is assigned independently
+      upstream -- the two existing forks of this codebase both used v318, for
+      different migrations, which is how that collision is discovered.
+
+      Consequences: The columns appear at startup rather than at a recorded
+      migration step, so there is no version-table evidence that they were
+      added and no down path. For two boolean columns defaulting to false that
+      is an acceptable trade; for anything with data movement it would not be.
+    }
+
+    EnforceAtDispatch {
+      Decision: Check the grant inside CreateTaskForRunner, as a condition on
+      the query that selects a job, rather than anywhere earlier.
+
+      Scope: Governs where the privilege boundary lives.
+
+      Design issues addressed: Every earlier point -- the submission form, the
+      runner picker, the workflow renderer -- governs a value somebody supplies
+      and is bypassed by committing a workflow file and pushing it.
+
+      Consequences: The boundary is one function with one caller, which is
+      what makes it reviewable. It also means the feature cannot be tested by
+      exercising the UI; it needs a job, a runner and a dispatch.
+    }
+  }
+}

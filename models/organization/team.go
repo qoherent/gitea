@@ -83,10 +83,20 @@ type Team struct {
 	Members                 []*user_model.User `xorm:"-"`
 	NumRepos                int
 	NumMembers              int
-	Units                   []*TeamUnit         `xorm:"-"`
-	IncludesAllRepositories bool                `xorm:"NOT NULL DEFAULT false"`
-	CanCreateOrgRepo        bool                `xorm:"NOT NULL DEFAULT false"`
-	Visibility              structs.VisibleType `xorm:"NOT NULL DEFAULT 2"`
+	Units                   []*TeamUnit `xorm:"-"`
+	IncludesAllRepositories bool        `xorm:"NOT NULL DEFAULT false"`
+	CanCreateOrgRepo        bool        `xorm:"NOT NULL DEFAULT false"`
+	// OrgPrivilegedCompute lets this team's members have runs dispatched to
+	// runners marked PrivilegedCompute in this organization. Unlike the other
+	// organization-wide flags it is NOT granted to the owner team
+	// automatically: privileged runners execute on the instance's own
+	// hardware, so the grant is always deliberate. See
+	// actions.CreateTaskForRunner.
+	//
+	// Added by SyncAllTables from this struct rather than by a migration, for
+	// the reason given on ActionRunner.PrivilegedCompute.
+	OrgPrivilegedCompute bool                `xorm:"NOT NULL DEFAULT false"`
+	Visibility           structs.VisibleType `xorm:"NOT NULL DEFAULT 2"`
 }
 
 func (t *Team) IsPublic() bool  { return t.Visibility.IsPublic() }
@@ -295,4 +305,20 @@ func GetPossibleTeamByID(ctx context.Context, teamID int64) (int64, *Team, error
 func IncrTeamRepoNum(ctx context.Context, teamID int64) error {
 	_, err := db.GetEngine(ctx).Incr("num_repos").ID(teamID).Update(new(Team))
 	return err
+}
+
+// OrgPrivilegedCompute reports whether the user may have runs dispatched to
+// runners marked PrivilegedCompute in this organization.
+//
+// The grant comes from membership of any team in the org carrying the flag, so
+// it is revoked by leaving that team rather than by leaving the organization.
+//
+// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute::TeamGrant interface
+func OrgPrivilegedCompute(ctx context.Context, orgID, uid int64) (bool, error) {
+	return db.GetEngine(ctx).
+		Where(builder.Eq{"team.org_privileged_compute": true}).
+		Join("INNER", "team_user", "team_user.team_id = team.id").
+		And("team_user.uid = ?", uid).
+		And("team_user.org_id = ?", orgID).
+		Exist(new(Team))
 }

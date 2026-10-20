@@ -49,6 +49,18 @@ type ActionRunner struct {
 	Description string                 `xorm:"TEXT"`
 	Base        int                    // 0 native 1 docker 2 virtual machine
 	RepoRange   string                 // glob match which repositories could use this runner
+	// PrivilegedCompute marks a runner that executes on hardware the instance
+	// owns rather than throwaway CI capacity. A job reaches it only if the user
+	// who triggered the run holds OrgPrivilegedCompute in the owning
+	// organization, which is enforced in CreateTaskForRunner. Only a site admin
+	// can set it.
+	//
+	// No migration declares this column. ActionRunner is a registered model, so
+	// SyncAllTables adds it at startup from this struct -- which keeps the fork
+	// out of Gitea's version table, where every entry we add is a conflict on
+	// the next upstream merge and a number that means something different here
+	// than it does upstream.
+	PrivilegedCompute bool `xorm:"NOT NULL DEFAULT false"`
 
 	Token     string `xorm:"-"`
 	TokenHash string `xorm:"UNIQUE"` // sha256 of token
@@ -489,4 +501,61 @@ func UpdateWrongRepoLevelRunners(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+// FilterReservedLabels drops labels that belong to a privileged runner which
+// this runner is not entitled to answer for, returning the labels it may keep
+// and those removed.
+//
+// Runners declare their own labels, and dispatch matches on label text alone.
+// Without this, any runner -- a laptop registered by anyone who can add an
+// organization runner -- could declare "churchill-3090" and receive work meant
+// for the GPU box, including whatever datasets and secrets that job pulls. The
+// grant checked in CreateTaskForRunner governs who may *submit* such work; it
+// says nothing about which machine ends up running it.
+//
+// A label held by a privileged runner is therefore reserved to privileged
+// runners of the same organization. The reservation is instance-wide because a
+// global runner takes jobs from every repository, so a narrower scope would
+// leave the interception open. Only a site admin can mark a runner privileged,
+// so the reserved set stays administrator-controlled.
+//
+// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute::LabelReservation interface
+func FilterReservedLabels(ctx context.Context, runner *ActionRunner, labels []string) (keep, dropped []string, err error) {
+	if len(labels) == 0 {
+		return labels, nil, nil
+	}
+
+	var privileged []*ActionRunner
+	if err := db.GetEngine(ctx).
+		Where(builder.Eq{"privileged_compute": true}).
+		And(builder.Neq{"id": runner.ID}).
+		Find(&privileged); err != nil {
+		return nil, nil, err
+	}
+	if len(privileged) == 0 {
+		return labels, nil, nil
+	}
+
+	// label -> the organizations whose privileged runners hold it.
+	reserved := make(map[string]container.Set[int64])
+	for _, p := range privileged {
+		for _, l := range p.AgentLabels {
+			if reserved[l] == nil {
+				reserved[l] = make(container.Set[int64])
+			}
+			reserved[l].Add(p.OwnerID)
+		}
+	}
+
+	keep = make([]string, 0, len(labels))
+	for _, l := range labels {
+		owners, isReserved := reserved[l]
+		if isReserved && !(runner.PrivilegedCompute && owners.Contains(runner.OwnerID)) {
+			dropped = append(dropped, l)
+			continue
+		}
+		keep = append(keep, l)
+	}
+	return keep, dropped, nil
 }

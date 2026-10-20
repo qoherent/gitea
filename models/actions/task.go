@@ -16,6 +16,7 @@ import (
 	"gitea.dev/models/db"
 	"gitea.dev/models/unit"
 	"gitea.dev/modules/actions/jobparser"
+	"gitea.dev/modules/container"
 	"gitea.dev/modules/globallock"
 	"gitea.dev/modules/log"
 	"gitea.dev/modules/setting"
@@ -251,6 +252,40 @@ var pickTaskBatchSize = 100
 // atomically claims it. It iterates through all matching jobs so that a
 // concurrent claim by another runner (which would lose the optimistic lock on
 // job #1) does not leave the remaining jobs permanently unassigned.
+// reservedPrivilegedLabels lists the labels this runner may not answer for:
+// those held by a privileged runner it is not entitled to stand in for.
+//
+// Empty for a privileged runner of the owning organization, which is the one
+// that should be taking the work.
+func reservedPrivilegedLabels(ctx context.Context, runner *ActionRunner) (container.Set[string], error) {
+	var privileged []*ActionRunner
+	if err := db.GetEngine(ctx).
+		Where(builder.Eq{"privileged_compute": true}).
+		And(builder.Neq{"id": runner.ID}).
+		Find(&privileged); err != nil {
+		return nil, err
+	}
+	out := make(container.Set[string])
+	for _, p := range privileged {
+		if runner.PrivilegedCompute && p.OwnerID == runner.OwnerID {
+			continue
+		}
+		out.AddMultiple(p.AgentLabels...)
+	}
+	return out, nil
+}
+
+func claimsReservedLabel(reserved container.Set[string], runsOn []string) bool {
+	for _, label := range runsOn {
+		if reserved.Contains(label) {
+			return true
+		}
+	}
+	return false
+}
+
+// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute logic
+// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute::DispatchDecision interface
 func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask, bool, error) {
 	if db.InTransaction(ctx) {
 		return nil, false, errors.New("CreateTaskForRunner must not be called within a database transaction")
@@ -266,6 +301,39 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 			Where(builder.Eq{"`repository`.owner_id": runner.OwnerID, "`repo_unit`.type": unit.TypeActions}))
 	}
 	baseCond := builder.Eq{"task_id": 0, "status": StatusWaiting, "is_reusable_caller": false}.And(jobCond)
+
+	if runner.PrivilegedCompute {
+		// Scope alone is the wrong gate for a privileged runner: it asks which
+		// repository the run belongs to, when the question is who triggered it.
+		// Write access to one organization repository would otherwise carry
+		// code execution on the organization's hardware.
+		if runner.OwnerID == 0 {
+			// The grant is per-organization, so a runner with no owning
+			// organization has nothing to check against and takes no job. The
+			// edit path refuses to create this state; failing closed here keeps
+			// a row that arrives another way -- a direct database write, some
+			// future registration path -- from dispatching anyway.
+			log.Warn("actions: runner %d (%q) is marked privileged but has no owning organization, so it will be given no jobs", runner.ID, runner.Name)
+			return nil, false, nil
+		}
+		baseCond = baseCond.And(builder.In("run_id",
+			builder.Select("id").From("action_run").Where(
+				builder.In("trigger_user_id",
+					builder.Select("`team_user`.uid").From("team_user").
+						Join("INNER", "team", "`team`.id = `team_user`.team_id").
+						Where(builder.Eq{
+							"`team`.org_id":                 runner.OwnerID,
+							"`team`.org_privileged_compute": true,
+						})))))
+	}
+
+	// A label reserved to a privileged runner is honoured at the point a job is
+	// matched, not only where a runner declares its labels: a row that gained a
+	// reserved label another way must still not receive that work.
+	reserved, err := reservedPrivilegedLabels(ctx, runner)
+	if err != nil {
+		return nil, false, err
+	}
 
 	// TODO: a more efficient way to filter labels
 	log.Trace("runner labels: %v", runner.AgentLabels)
@@ -291,6 +359,9 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 
 		for _, v := range jobs {
 			if !runner.CanMatchLabels(v.RunsOn) {
+				continue
+			}
+			if claimsReservedLabel(reserved, v.RunsOn) {
 				continue
 			}
 			task, ok, err := claimJobForRunner(ctx, runner, v)
