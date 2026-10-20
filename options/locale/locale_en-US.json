@@ -2819,6 +2819,8 @@
   "org.teams.leave.detail": "Leave %s?",
   "org.teams.can_create_org_repo": "Create repositories",
   "org.teams.can_create_org_repo_helper": "Members can create new repositories in organization. Creator will get administrator access to the new repository.",
+  "org.teams.org_privileged_compute": "Privileged compute",
+  "org.teams.org_privileged_compute_helper": "Members of this team can have workflow runs dispatched to runners an administrator has marked for privileged compute. Those runners execute on hardware this instance owns, so this is never granted automatically -- including to the Owners team.",
   "org.teams.none_access": "No Access",
   "org.teams.none_access_helper": "Members cannot view or do any other action on this unit. It has no effect for public repositories.",
   "org.teams.general_access": "General Access",

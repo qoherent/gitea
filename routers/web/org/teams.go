@@ -380,6 +380,7 @@ func NewTeamPost(ctx *context.Context) {
 		AccessMode:              teamPermission,
 		IncludesAllRepositories: includesAllRepositories,
 		CanCreateOrgRepo:        form.CanCreateOrgRepo,
+		OrgPrivilegedCompute:    form.OrgPrivilegedCompute,
 		Visibility:              org_model.NormalizeTeamVisibility(form.Visibility),
 	}
 
@@ -569,9 +570,15 @@ func EditTeamPost(ctx *context.Context) {
 			t.IncludesAllRepositories = includesAllRepositories
 		}
 		t.CanCreateOrgRepo = form.CanCreateOrgRepo
+		t.OrgPrivilegedCompute = form.OrgPrivilegedCompute
 		t.Visibility = org_model.NormalizeTeamVisibility(form.Visibility)
 	} else {
 		t.CanCreateOrgRepo = true
+		// Deliberately not granted here. The owner team is given every other
+		// organization-wide permission automatically; privileged compute runs
+		// on hardware the instance owns, so it is always a separate decision.
+		// An organization that wants its owners to have it makes them a team
+		// that carries it.
 		// The owner team must remain listable to all org members.
 		t.Visibility = structs.VisibleTypeLimited
 	}
