@@ -123,6 +123,41 @@ func (r *ActionRunner) BelongsToOwnerType() types.OwnerType {
 	return types.OwnerTypeSystemGlobal
 }
 
+// RunnerScope names which of the three registration scopes a runner holds.
+type RunnerScope string
+
+const (
+	// RunnerScopeGlobal accepts jobs from every repository on the instance,
+	// matched on label text alone.
+	RunnerScopeGlobal RunnerScope = "global"
+	// RunnerScopeOwner accepts jobs from the repositories of one user or
+	// organization.
+	RunnerScopeOwner RunnerScope = "owner"
+	// RunnerScopeRepository accepts jobs from one repository.
+	RunnerScopeRepository RunnerScope = "repository"
+)
+
+// Scope reports the runner's registration scope from its identifiers alone.
+//
+// BelongsToOwnerType answers a neighbouring question and cannot be used here:
+// it dereferences Owner, which is `xorm:"-"` and populated only by
+// LoadAttributes, so calling it on a runner read straight from a query panics.
+// This needs no attributes loaded.
+//
+// It reports owner scope without saying whether that owner is a user or an
+// organization, because the distinction it exists to draw is global versus
+// not: a global runner takes work from every repository on the instance,
+// which is a different kind of exposure from the other two.
+func (r *ActionRunner) Scope() RunnerScope {
+	if r.RepoID != 0 {
+		return RunnerScopeRepository
+	}
+	if r.OwnerID != 0 {
+		return RunnerScopeOwner
+	}
+	return RunnerScopeGlobal
+}
+
 // if the logic here changed, you should also modify FindRunnerOptions.ToCond
 func (r *ActionRunner) Status() runnerv1.RunnerStatus {
 	if time.Since(r.LastOnline.AsTime()) > RunnerOfflineTime {

@@ -22212,6 +22212,11 @@
           "type": "string",
           "x-go-name": "Name"
         },
+        "scope": {
+          "description": "Scope is the runner's registration scope: \"global\", \"owner\" or\n\"repository\". A global runner accepts jobs from every repository on the\ninstance, matched on label text alone, which the listings cannot\notherwise be used to detect.",
+          "type": "string",
+          "x-go-name": "Scope"
+        },
         "status": {
           "type": "string",
           "x-go-name": "Status"

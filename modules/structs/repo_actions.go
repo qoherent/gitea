@@ -230,6 +230,11 @@ type ActionRunner struct {
 	Disabled  bool                 `json:"disabled"`
 	Ephemeral bool                 `json:"ephemeral"`
 	Labels    []*ActionRunnerLabel `json:"labels"`
+	// Scope is the runner's registration scope: "global", "owner" or
+	// "repository". A global runner accepts jobs from every repository on the
+	// instance, matched on label text alone, which the listings cannot
+	// otherwise be used to detect.
+	Scope string `json:"scope"`
 }
 
 // EditActionRunnerOption represents the editable fields for a runner.
