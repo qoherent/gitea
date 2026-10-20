@@ -45,6 +45,16 @@
 				<input id="description" name="description" value="{{.Runner.Description}}">
 			</div>
 
+			{{if .IsAdmin}}
+				<div class="field">
+					<div class="ui checkbox">
+						<input id="privileged_compute" name="privileged_compute" type="checkbox" {{if .Runner.PrivilegedCompute}}checked{{end}}>
+						<label for="privileged_compute">{{ctx.Locale.Tr "actions.runners.privileged_compute"}}</label>
+					</div>
+					<p class="help">{{ctx.Locale.Tr "actions.runners.privileged_compute_helper"}}</p>
+				</div>
+			{{end}}
+
 			<div class="divider"></div>
 
 			<div class="field">
