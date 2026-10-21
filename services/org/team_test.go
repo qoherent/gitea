@@ -328,3 +328,26 @@ func TestIncludesAllRepositoriesTeams(t *testing.T) {
 	}
 	assert.NoError(t, DeleteOrganization(t.Context(), org, false), "DeleteOrganization")
 }
+
+// TestUpdateTeamPersistsPrivilegedCompute covers the column list in
+// UpdateTeam, which named every field but this one. The web form and the API
+// both assigned the grant to the struct and then called UpdateTeam, so turning
+// it on or off on an existing team appeared to succeed and changed nothing --
+// and creation, which inserts every column, worked, which is what kept this
+// hidden. A grant that cannot be revoked is the dangerous direction.
+func TestUpdateTeamPersistsPrivilegedCompute(t *testing.T) {
+	assert.NoError(t, unittest.PrepareTestDatabase())
+
+	team := unittest.AssertExistsAndLoadBean(t, &organization.Team{ID: 2})
+	assert.False(t, team.OrgPrivilegedCompute, "fixture is expected to carry no grant")
+
+	team.OrgPrivilegedCompute = true
+	assert.NoError(t, UpdateTeam(t.Context(), team, false, false))
+	reloaded := unittest.AssertExistsAndLoadBean(t, &organization.Team{ID: 2})
+	assert.True(t, reloaded.OrgPrivilegedCompute, "granting it did not reach the database")
+
+	reloaded.OrgPrivilegedCompute = false
+	assert.NoError(t, UpdateTeam(t.Context(), reloaded, false, false))
+	revoked := unittest.AssertExistsAndLoadBean(t, &organization.Team{ID: 2})
+	assert.False(t, revoked.OrgPrivilegedCompute, "revoking it did not reach the database")
+}

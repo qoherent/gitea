@@ -222,6 +222,7 @@ func CreateTeam(ctx *context.APIContext) {
 		Description:             form.Description,
 		IncludesAllRepositories: form.IncludesAllRepositories,
 		CanCreateOrgRepo:        form.CanCreateOrgRepo,
+		OrgPrivilegedCompute:    form.PrivilegedCompute,
 		AccessMode:              teamPermission,
 		Visibility:              organization.NormalizeTeamVisibility(string(form.Visibility)),
 	}
@@ -291,6 +292,13 @@ func EditTeam(ctx *context.APIContext) {
 
 	if form.CanCreateOrgRepo != nil {
 		team.CanCreateOrgRepo = team.IsOwnerTeam() || *form.CanCreateOrgRepo
+	}
+
+	// No IsOwnerTeam special case, unlike CanCreateOrgRepo above: the owner
+	// team is not given this grant automatically, so it is not forced on
+	// here either. An organization whose owners want it says so.
+	if form.PrivilegedCompute != nil {
+		team.OrgPrivilegedCompute = *form.PrivilegedCompute
 	}
 
 	if len(form.Name) > 0 {

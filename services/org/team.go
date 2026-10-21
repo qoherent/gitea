@@ -109,8 +109,15 @@ func UpdateTeam(ctx context.Context, t *organization.Team, authChanged, includeA
 		}
 
 		sess := db.GetEngine(ctx)
+		// org_privileged_compute is named here for the same reason every other
+		// column is: the list is explicit, so a field absent from it is read
+		// from the form, assigned to the struct, and then silently dropped.
+		// Creation inserts every column and so appeared to work, which is what
+		// made the omission hard to see -- the grant could be given to a new
+		// team and never taken away again.
 		if _, err = sess.ID(t.ID).Cols("name", "lower_name", "description",
-			"can_create_org_repo", "authorize", "includes_all_repositories", "visibility").Update(t); err != nil {
+			"can_create_org_repo", "authorize", "includes_all_repositories",
+			"org_privileged_compute", "visibility").Update(t); err != nil {
 			return fmt.Errorf("update: %w", err)
 		}
 
