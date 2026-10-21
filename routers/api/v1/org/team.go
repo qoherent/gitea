@@ -222,7 +222,16 @@ func CreateTeam(ctx *context.APIContext) {
 		Description:             form.Description,
 		IncludesAllRepositories: form.IncludesAllRepositories,
 		CanCreateOrgRepo:        form.CanCreateOrgRepo,
-		OrgPrivilegedCompute:    form.PrivilegedCompute,
+		// A site-admin decision, as on the web form and as marking the runner
+		// itself is. Passing this endpoint's owner check is not the same
+		// thing: an organization owner says who is in their teams, and only an
+		// administrator says that a team reaches hardware the instance owns.
+		//
+		// Dropped rather than refused, unlike the runner endpoint. That one
+		// carries nothing else, so a refusal is the whole answer; this carries
+		// a team, and refusing the lot would stop an owner editing a team's
+		// name over a field their form never showed them.
+		OrgPrivilegedCompute:    ctx.Doer.IsAdmin && form.PrivilegedCompute,
 		AccessMode:              teamPermission,
 		Visibility:              organization.NormalizeTeamVisibility(string(form.Visibility)),
 	}
@@ -294,10 +303,13 @@ func EditTeam(ctx *context.APIContext) {
 		team.CanCreateOrgRepo = team.IsOwnerTeam() || *form.CanCreateOrgRepo
 	}
 
-	// No IsOwnerTeam special case, unlike CanCreateOrgRepo above: the owner
-	// team is not given this grant automatically, so it is not forced on
-	// here either. An organization whose owners want it says so.
-	if form.PrivilegedCompute != nil {
+	// Site admins only, for the reason CreateTeam gives, and dropped rather
+	// than refused for the same one.
+	//
+	// No IsOwnerTeam special case either, unlike CanCreateOrgRepo above: the
+	// owner team is not given this grant automatically, so it is not forced on
+	// here.
+	if form.PrivilegedCompute != nil && ctx.Doer.IsAdmin {
 		team.OrgPrivilegedCompute = *form.PrivilegedCompute
 	}
 

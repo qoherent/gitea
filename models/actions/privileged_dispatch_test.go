@@ -209,3 +209,50 @@ func TestTheGrantDoesNotCrossOrganizations(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, granted)
 }
+
+// A re-run is attributed to whoever asked for it, and the gate must read that
+// rather than the run's original trigger.
+//
+// Upstream 1.27 records the rerunner on a new ActionRunAttempt and leaves
+// `action_run.trigger_user_id` as the person who first caused the run. The
+// gate subqueries `action_run`, so an ungranted person re-running a granted
+// colleague's job is admitted on the colleague's grant -- which is a way onto
+// the hardware for somebody who was never given it, needing only the ability
+// to press a button on a run they can see.
+func TestARerunIsJudgedOnWhoAskedForIt(t *testing.T) {
+	assert.NoError(t, unittest.PrepareTestDatabase())
+	grantTeam(t, privTeamID)
+
+	runner := insertRunner(t, "11111111-2222-3333-4444-555555555555", privOrgID, true, "gpu")
+
+	// The run was triggered by the granted user, so the run row says granted.
+	job := waitingJobFor(t, grantedUID, []string{"gpu"}, 900)
+
+	// The latest attempt was asked for by a member of the organization who
+	// holds no grant: user 15 is in team 7, which carries nothing. User 4 is
+	// in the granted team 2 and would prove nothing here.
+	ungranted := int64(15)
+	held, err := organization_model.OrgPrivilegedCompute(t.Context(), privOrgID, ungranted)
+	require.NoError(t, err)
+	require.False(t, held, "user 4 is expected to hold no grant in this organization")
+
+	attempt := &ActionRunAttempt{
+		RepoID:        privRepoID,
+		RunID:         job.RunID,
+		Attempt:       2,
+		TriggerUserID: ungranted,
+		Status:        StatusWaiting,
+	}
+	require.NoError(t, db.Insert(t.Context(), attempt))
+
+	// Where rather than ID: xorm's ID() resolves a primary key against a bean
+	// type, and Table() alone gives it none.
+	_, err = db.GetEngine(t.Context()).Table("action_run_job").Where("id = ?", job.ID).
+		Update(map[string]any{"run_attempt_id": attempt.ID})
+	require.NoError(t, err)
+
+	got, ok, err := CreateTaskForRunner(t.Context(), runner)
+	require.NoError(t, err)
+	assert.False(t, ok, "a re-run asked for by somebody without the grant reached privileged hardware")
+	assert.Nil(t, got)
+}

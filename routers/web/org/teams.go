@@ -380,7 +380,13 @@ func NewTeamPost(ctx *context.Context) {
 		AccessMode:              teamPermission,
 		IncludesAllRepositories: includesAllRepositories,
 		CanCreateOrgRepo:        form.CanCreateOrgRepo,
-		OrgPrivilegedCompute:    form.OrgPrivilegedCompute,
+		// Site admins only, like marking the runner itself. An organization
+		// owner may say who is in their teams; they may not say that one of
+		// those teams reaches hardware the instance owns. The checkbox is not
+		// rendered for anyone else, so a non-admin posting the field
+		// constructed the request by hand: their value is dropped rather than
+		// refused, and the rest of the form is theirs to edit.
+		OrgPrivilegedCompute:    ctx.Doer.IsAdmin && form.OrgPrivilegedCompute,
 		Visibility:              org_model.NormalizeTeamVisibility(form.Visibility),
 	}
 
@@ -570,7 +576,9 @@ func EditTeamPost(ctx *context.Context) {
 			t.IncludesAllRepositories = includesAllRepositories
 		}
 		t.CanCreateOrgRepo = form.CanCreateOrgRepo
-		t.OrgPrivilegedCompute = form.OrgPrivilegedCompute
+		if ctx.Doer.IsAdmin {
+			t.OrgPrivilegedCompute = form.OrgPrivilegedCompute
+		}
 		t.Visibility = org_model.NormalizeTeamVisibility(form.Visibility)
 	} else {
 		t.CanCreateOrgRepo = true

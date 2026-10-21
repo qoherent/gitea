@@ -22,6 +22,9 @@ component PrivilegedCompute {
     `team.org_privileged_compute` is the grant. A user holds it through
     membership of any team in the organization carrying the flag, so it is
     revoked by leaving that team rather than by leaving the organization.
+    Only a site admin may set it, as with the runner's own mark: an
+    organization owner says who is in their teams, and nobody but an
+    administrator says that a team reaches hardware the instance owns.
 
     Neither column is declared by a migration. Both are registered models, so
     SyncAllTables adds the column at startup from the struct definition. That
@@ -53,6 +56,21 @@ component PrivilegedCompute {
     The grant is never given to the owner team automatically, unlike the
     other organization-wide flags. Privileged runners execute on the
     instance's own hardware, so the grant is always a deliberate act.
+
+    Both keys are the site admin's: marking the machine and granting the team.
+    Delegating the second to organization owners was the first shape of this,
+    on the reading that an admin allocating hardware to an organization has
+    already drawn the boundary and the owner only distributes within it. That
+    is true of the boundary and false of the risk: an owner could then admit
+    anyone they could add to the organization, so the admin's decision was
+    "this organization" when the thing being decided is "these people".
+
+    A non-admin's value is dropped rather than refused, on the team endpoints
+    and on the team form. The checkbox is not rendered for them, so sending
+    the field means constructing the request by hand; refusing the whole
+    request would stop an owner renaming a team over a field their form never
+    showed them. The runner endpoint refuses instead, because it carries
+    nothing else and a refusal is the whole answer there.
 
     Dispatch is the only place this can be enforced. It is the one point at
     which a job is bound to a runner; any gate before it governs a value the
