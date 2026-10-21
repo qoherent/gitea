@@ -386,6 +386,15 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 			if claimsReservedLabel(reserved, v.RunsOn) {
 				continue
 			}
+			// Checked per candidate rather than once for the runner: a global
+			// runner takes work from every owner on the instance, so there is
+			// no single owner whose allowance this poll could be measured
+			// against. Skipped rather than failed -- an owner out of compute
+			// has jobs that wait, which is what a quota means, and the next
+			// owner's job is still handed out.
+			if ComputeExhausted(ctx, v.OwnerID) {
+				continue
+			}
 			task, ok, err := claimJobForRunner(ctx, runner, v)
 			if err != nil {
 				return nil, false, err
@@ -605,6 +614,12 @@ func UpdateTaskByState(ctx context.Context, runnerID int64, state *runnerv1.Task
 			}, nil, "status", "stopped"); err != nil {
 				return err
 			}
+			// Best-effort, and deliberately not propagated: a job that ran and
+			// then reports a failure because its cost could not be written is
+			// worse than a job whose cost was not counted.
+			if err := RecordComputeUsage(ctx, task); err != nil {
+				log.Error("actions: could not record compute usage for task %d: %v", task.ID, err)
+			}
 		} else {
 			// Force update ActionTask.Updated to avoid the task being judged as a zombie task
 			task.Updated = timeutil.TimeStampNow()
@@ -707,6 +722,13 @@ func StopTask(ctx context.Context, taskID int64, status Status) error {
 
 	if err := UpdateTask(ctx, task, "status", "stopped"); err != nil {
 		return err
+	}
+
+	// The other place a task stops: cancelled, timed out, or reaped as a
+	// zombie. It still occupied a machine for the time it ran, so it still
+	// counts.
+	if err := RecordComputeUsage(ctx, task); err != nil {
+		log.Error("actions: could not record compute usage for task %d: %v", task.ID, err)
 	}
 
 	if err := task.LoadAttributes(ctx); err != nil {

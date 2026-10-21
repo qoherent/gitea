@@ -53,11 +53,37 @@ component PrivilegedCompute {
   }
 
   constraints {
+    Registering a runner is reserved to site admins and to organizations the
+    instance has granted privileged compute. Bringing a machine onto the
+    instance is offering to execute other people's jobs; with open sign-up
+    that was available to anyone, at user scope or at an organization they
+    could create and own. Neither reached privileged hardware, and both put a
+    machine of the registrant's choosing in the path of somebody else's code
+    and secrets.
+
+    An organization counts as privileged when any of its teams carries the
+    grant. That needs no column of its own: the grant is already a site
+    admin's to give, so it is the same fact asked of the organization rather
+    than of a person.
+
+    Compute is metered per owner per calendar month, and nobody is limited
+    until somebody is given a limit. An instance-wide default would start
+    refusing work on upgrade for a deployment that never asked for a quota,
+    which is the opposite of what both flags do. A granted organization is
+    exempt: the grant is the instance saying this work runs on its own
+    hardware, and metering what has been declared unmetered would be the
+    instance disagreeing with itself.
+
+    Accounting never fails the task it is accounting for. A job that ran and
+    then reported a failure because its cost could not be written would be
+    worse than a job whose cost went uncounted.
+
     The grant is never given to the owner team automatically, unlike the
     other organization-wide flags. Privileged runners execute on the
     instance's own hardware, so the grant is always a deliberate act.
 
-    Both keys are the site admin's: marking the machine and granting the team.
+    Every decision here is the site admin's: marking the machine, granting the
+    team, permitting a registration, and setting a limit.
     Delegating the second to organization owners was the first shape of this,
     on the reading that an admin allocating hardware to an organization has
     already drawn the boundary and the owner only distributes within it. That
