@@ -1729,6 +1729,16 @@ func Routes() *web.Router {
 				reqOrgOwnership(),
 				org.NewAction(),
 			)
+			// Compute is metered per owner, not per repository, so it hangs
+			// off the organization rather than off the shared Actions routes.
+			// An owner may read their allowance -- somebody whose jobs have
+			// stopped being dispatched should be able to find out why without
+			// asking an administrator -- and only a site admin may set it.
+			m.Group("/actions/compute", func() {
+				m.Get("", reqToken(), reqOrgOwnership(), org.GetComputeAllowance)
+				m.Put("", reqToken(), reqOrgOwnership(),
+					bind(api.SetComputeAllowanceOption{}), org.SetComputeAllowance)
+			})
 			m.Group("/public_members", func() {
 				m.Get("", org.ListPublicMembers)
 				m.Combo("/{username}").Get(org.IsPublicMember).
