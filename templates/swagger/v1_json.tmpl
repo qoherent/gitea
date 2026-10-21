@@ -22212,10 +22212,10 @@
           "type": "string",
           "x-go-name": "Name"
         },
-        "scope": {
-          "description": "Scope is the runner's registration scope: \"global\", \"owner\" or\n\"repository\". A global runner accepts jobs from every repository on the\ninstance, matched on label text alone, which the listings cannot\notherwise be used to detect.",
-          "type": "string",
-          "x-go-name": "Scope"
+        "privileged_compute": {
+          "description": "PrivilegedCompute marks a runner whose jobs may only come from a team\nholding the organization's privileged-compute grant. Reported so that a\nsurface listing an organization's runners can say which of them are\nreachable by its members, which the labels alone never show.",
+          "type": "boolean",
+          "x-go-name": "PrivilegedCompute"
         },
         "status": {
           "type": "string",
@@ -25078,6 +25078,11 @@
           "x-go-enum-desc": "read RepoWritePermissionRead\nwrite RepoWritePermissionWrite\nadmin RepoWritePermissionAdmin",
           "x-go-name": "Permission"
         },
+        "privileged_compute": {
+          "description": "Whether this team's members may have Actions runs dispatched to runners\nmarked for privileged compute in this organization. Defaults to false,\nso a team made without naming it carries no grant.",
+          "type": "boolean",
+          "x-go-name": "PrivilegedCompute"
+        },
         "units": {
           "type": "array",
           "items": {
@@ -25452,6 +25457,11 @@
         "disabled": {
           "type": "boolean",
           "x-go-name": "Disabled"
+        },
+        "privileged_compute": {
+          "description": "Whether this runner is reserved for an organization's privileged-compute\nteams. A site-admin decision and only for an organization-owned runner,\nas on the web form: the grant that gates it is per-organization, so a\nglobal or repository-scoped runner marked privileged is one no job can\never be dispatched to. Left unchanged when omitted.",
+          "type": "boolean",
+          "x-go-name": "PrivilegedCompute"
         }
       },
       "x-go-package": "gitea.dev/modules/structs"
@@ -26278,6 +26288,11 @@
           ],
           "x-go-enum-desc": "read RepoWritePermissionRead\nwrite RepoWritePermissionWrite\nadmin RepoWritePermissionAdmin",
           "x-go-name": "Permission"
+        },
+        "privileged_compute": {
+          "description": "Whether this team's members may have Actions runs dispatched to runners\nmarked for privileged compute in this organization. When omitted, the\ngrant is left unchanged -- a pointer rather than a bool, so that an\nedit which does not mention it cannot revoke it.",
+          "type": "boolean",
+          "x-go-name": "PrivilegedCompute"
         },
         "units": {
           "type": "array",
@@ -30235,6 +30250,11 @@
           ],
           "x-go-enum-desc": "none AccessLevelNameNone\nread AccessLevelNameRead\nwrite AccessLevelNameWrite\nadmin AccessLevelNameAdmin\nowner AccessLevelNameOwner",
           "x-go-name": "Permission"
+        },
+        "privileged_compute": {
+          "description": "Whether this team's members may have Actions runs dispatched to runners\nmarked for privileged compute in this organization. Never granted to\nthe owner team automatically, unlike the other organization-wide flags:\nprivileged runners execute on hardware the instance owns.",
+          "type": "boolean",
+          "x-go-name": "PrivilegedCompute"
         },
         "units": {
           "type": "array",

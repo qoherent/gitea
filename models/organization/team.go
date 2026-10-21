@@ -83,9 +83,11 @@ type Team struct {
 	Members                 []*user_model.User `xorm:"-"`
 	NumRepos                int
 	NumMembers              int
-	Units                   []*TeamUnit `xorm:"-"`
-	IncludesAllRepositories bool        `xorm:"NOT NULL DEFAULT false"`
-	CanCreateOrgRepo        bool        `xorm:"NOT NULL DEFAULT false"`
+	Units                   []*TeamUnit         `xorm:"-"`
+	IncludesAllRepositories bool                `xorm:"NOT NULL DEFAULT false"`
+	CanCreateOrgRepo        bool                `xorm:"NOT NULL DEFAULT false"`
+	Visibility              structs.VisibleType `xorm:"NOT NULL DEFAULT 2"`
+
 	// OrgPrivilegedCompute lets this team's members have runs dispatched to
 	// runners marked PrivilegedCompute in this organization. Unlike the other
 	// organization-wide flags it is NOT granted to the owner team
@@ -95,8 +97,11 @@ type Team struct {
 	//
 	// Added by SyncAllTables from this struct rather than by a migration, for
 	// the reason given on ActionRunner.PrivilegedCompute.
-	OrgPrivilegedCompute bool                `xorm:"NOT NULL DEFAULT false"`
-	Visibility           structs.VisibleType `xorm:"NOT NULL DEFAULT 2"`
+	//
+	// Last, and in its own run, so gofmt leaves the alignment of the fields
+	// above it alone: a field inserted into that block realigns four upstream
+	// lines, and a fork pays for those at every merge.
+	OrgPrivilegedCompute bool `xorm:"NOT NULL DEFAULT false"`
 }
 
 func (t *Team) IsPublic() bool  { return t.Visibility.IsPublic() }

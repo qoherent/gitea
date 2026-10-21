@@ -17,7 +17,6 @@ import (
 	"gitea.dev/routers/api/v1/utils"
 	"gitea.dev/services/context"
 	"gitea.dev/services/convert"
-	"gitea.dev/services/privilegedcompute"
 )
 
 // RegistrationToken is response related to registration token
@@ -218,7 +217,6 @@ func UpdateRunner(ctx *context.APIContext, ownerID, repoID, runnerID int64) {
 			return
 		}
 		if marked {
-			privilegedcompute.RunnerMarked(ctx, ctx.Doer, runner, *form.PrivilegedCompute)
 		}
 	}
 

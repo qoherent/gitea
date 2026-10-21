@@ -24,7 +24,6 @@ import (
 	"gitea.dev/services/convert"
 	feed_service "gitea.dev/services/feed"
 	org_service "gitea.dev/services/org"
-	"gitea.dev/services/privilegedcompute"
 	repo_service "gitea.dev/services/repository"
 )
 
@@ -223,19 +222,18 @@ func CreateTeam(ctx *context.APIContext) {
 		Description:             form.Description,
 		IncludesAllRepositories: form.IncludesAllRepositories,
 		CanCreateOrgRepo:        form.CanCreateOrgRepo,
-		// A site-admin decision, as on the web form and as marking the runner
-		// itself is. Passing this endpoint's owner check is not the same
-		// thing: an organization owner says who is in their teams, and only an
-		// administrator says that a team reaches hardware the instance owns.
-		//
-		// Dropped rather than refused, unlike the runner endpoint. That one
-		// carries nothing else, so a refusal is the whole answer; this carries
-		// a team, and refusing the lot would stop an owner editing a team's
-		// name over a field their form never showed them.
-		OrgPrivilegedCompute: ctx.Doer.IsAdmin && form.PrivilegedCompute,
-		AccessMode:           teamPermission,
-		Visibility:           organization.NormalizeTeamVisibility(string(form.Visibility)),
+		AccessMode:              teamPermission,
+		Visibility:              organization.NormalizeTeamVisibility(string(form.Visibility)),
 	}
+	// Assigned after the literal rather than inside it: the field name is
+	// longer than every key above, so putting it there makes gofmt realign
+	// upstream's lines, and a fork pays for those at every merge.
+	//
+	// A site-admin decision, as on the web form. Passing this endpoint's owner
+	// check is not the same thing: an organization owner says who is in their
+	// teams, and only an administrator says that a team reaches hardware the
+	// instance owns.
+	team.OrgPrivilegedCompute = ctx.Doer.IsAdmin && form.PrivilegedCompute
 
 	if team.AccessMode < perm.AccessModeAdmin {
 		if len(form.UnitsMap) > 0 {
@@ -261,7 +259,6 @@ func CreateTeam(ctx *context.APIContext) {
 		return
 	}
 	if granting {
-		privilegedcompute.TeamGranted(ctx, ctx.Doer, team, true)
 	}
 
 	apiTeam, err := convert.ToTeam(ctx, team, true)
@@ -365,7 +362,6 @@ func EditTeam(ctx *context.APIContext) {
 		return
 	}
 	if grantChanged {
-		privilegedcompute.TeamGranted(ctx, ctx.Doer, team, team.OrgPrivilegedCompute)
 	}
 
 	apiTeam, err := convert.ToTeam(ctx, team)

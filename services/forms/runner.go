@@ -15,9 +15,6 @@ import (
 // EditRunnerForm form for admin to create runner
 type EditRunnerForm struct {
 	Description string
-	// PrivilegedCompute is only read when the Doer is a site admin and the
-	// runner is organization-scoped; see RunnersEditPost.
-	PrivilegedCompute bool
 }
 
 // Validate validates form fields

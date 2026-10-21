@@ -135,41 +135,6 @@ func (r *ActionRunner) BelongsToOwnerType() types.OwnerType {
 	return types.OwnerTypeSystemGlobal
 }
 
-// RunnerScope names which of the three registration scopes a runner holds.
-type RunnerScope string
-
-const (
-	// RunnerScopeGlobal accepts jobs from every repository on the instance,
-	// matched on label text alone.
-	RunnerScopeGlobal RunnerScope = "global"
-	// RunnerScopeOwner accepts jobs from the repositories of one user or
-	// organization.
-	RunnerScopeOwner RunnerScope = "owner"
-	// RunnerScopeRepository accepts jobs from one repository.
-	RunnerScopeRepository RunnerScope = "repository"
-)
-
-// Scope reports the runner's registration scope from its identifiers alone.
-//
-// BelongsToOwnerType answers a neighbouring question and cannot be used here:
-// it dereferences Owner, which is `xorm:"-"` and populated only by
-// LoadAttributes, so calling it on a runner read straight from a query panics.
-// This needs no attributes loaded.
-//
-// It reports owner scope without saying whether that owner is a user or an
-// organization, because the distinction it exists to draw is global versus
-// not: a global runner takes work from every repository on the instance,
-// which is a different kind of exposure from the other two.
-func (r *ActionRunner) Scope() RunnerScope {
-	if r.RepoID != 0 {
-		return RunnerScopeRepository
-	}
-	if r.OwnerID != 0 {
-		return RunnerScopeOwner
-	}
-	return RunnerScopeGlobal
-}
-
 // if the logic here changed, you should also modify FindRunnerOptions.ToCond
 func (r *ActionRunner) Status() runnerv1.RunnerStatus {
 	if time.Since(r.LastOnline.AsTime()) > RunnerOfflineTime {
@@ -391,35 +356,6 @@ func UpdateRunner(ctx context.Context, r *ActionRunner, cols ...string) error {
 	return err
 }
 
-// SetRunnerPrivilegedCompute marks or unmarks a runner as privileged.
-//
-// Refuses a runner with no owning organization, for the reason
-// CreateTaskForRunner fails closed on one: the grant that gates a privileged
-// runner is per-organization, so such a runner has nothing to check against
-// and could never be dispatched to. The web form refuses it too; this is the
-// same refusal for the API.
-//
-// The task version is bumped as SetRunnerDisabled bumps it, because which jobs
-// this runner may be handed has changed.
-//
-// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute::RunnerMarking interface
-func SetRunnerPrivilegedCompute(ctx context.Context, runner *ActionRunner, privileged bool) error {
-	if privileged && runner.OwnerID == 0 {
-		return util.NewInvalidArgumentErrorf("a privileged runner must belong to an organization")
-	}
-	if runner.PrivilegedCompute == privileged {
-		return nil
-	}
-
-	return db.WithTx(ctx, func(ctx context.Context) error {
-		runner.PrivilegedCompute = privileged
-		if err := UpdateRunner(ctx, runner, "privileged_compute"); err != nil {
-			return err
-		}
-		return IncreaseTaskVersion(ctx, runner.OwnerID, runner.RepoID)
-	})
-}
-
 func SetRunnerDisabled(ctx context.Context, runner *ActionRunner, isDisabled bool) error {
 	if runner.IsDisabled == isDisabled {
 		return nil
@@ -530,61 +466,4 @@ func UpdateWrongRepoLevelRunners(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected()
-}
-
-// FilterReservedLabels drops labels that belong to a privileged runner which
-// this runner is not entitled to answer for, returning the labels it may keep
-// and those removed.
-//
-// Runners declare their own labels, and dispatch matches on label text alone.
-// Without this, any runner -- a laptop registered by anyone who can add an
-// organization runner -- could declare "churchill-3090" and receive work meant
-// for the GPU box, including whatever datasets and secrets that job pulls. The
-// grant checked in CreateTaskForRunner governs who may *submit* such work; it
-// says nothing about which machine ends up running it.
-//
-// A label held by a privileged runner is therefore reserved to privileged
-// runners of the same organization. The reservation is instance-wide because a
-// global runner takes jobs from every repository, so a narrower scope would
-// leave the interception open. Only a site admin can mark a runner privileged,
-// so the reserved set stays administrator-controlled.
-//
-// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute::LabelReservation interface
-func FilterReservedLabels(ctx context.Context, runner *ActionRunner, labels []string) (keep, dropped []string, err error) {
-	if len(labels) == 0 {
-		return labels, nil, nil
-	}
-
-	var privileged []*ActionRunner
-	if err := db.GetEngine(ctx).
-		Where(builder.Eq{"privileged_compute": true}).
-		And(builder.Neq{"id": runner.ID}).
-		Find(&privileged); err != nil {
-		return nil, nil, err
-	}
-	if len(privileged) == 0 {
-		return labels, nil, nil
-	}
-
-	// label -> the organizations whose privileged runners hold it.
-	reserved := make(map[string]container.Set[int64])
-	for _, p := range privileged {
-		for _, l := range p.AgentLabels {
-			if reserved[l] == nil {
-				reserved[l] = make(container.Set[int64])
-			}
-			reserved[l].Add(p.OwnerID)
-		}
-	}
-
-	keep = make([]string, 0, len(labels))
-	for _, l := range labels {
-		owners, isReserved := reserved[l]
-		if isReserved && !(runner.PrivilegedCompute && owners.Contains(runner.OwnerID)) {
-			dropped = append(dropped, l)
-			continue
-		}
-		keep = append(keep, l)
-	}
-	return keep, dropped, nil
 }

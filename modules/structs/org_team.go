@@ -99,30 +99,3 @@ type EditTeamOption struct {
 	// left unchanged.
 	Visibility *TeamVisibility `json:"visibility" binding:"OmitEmpty;In(public,limited,private)"`
 }
-
-// ComputeAllowance is how much runner time an organization has used this
-// period, and how much it may use.
-//
-// Storage already had a quota and compute had none, so "this organization has
-// used its share" was a sentence the instance could not say.
-type ComputeAllowance struct {
-	// The accounting window, "2006-01" in UTC. A calendar month, so it resets
-	// without anything running on a schedule.
-	Period string `json:"period"`
-	// Runner seconds spent in this window.
-	UsedSeconds int64 `json:"used_seconds"`
-	// The ceiling in seconds. Zero means none is set.
-	LimitSeconds int64 `json:"limit_seconds"`
-	// Whether work will be dispatched regardless of usage -- either because
-	// no limit is set, or because this organization holds privileged compute.
-	Unlimited bool `json:"unlimited"`
-	// Whether the exemption is the privileged-compute grant specifically,
-	// which is a different thing from nobody having set a limit yet.
-	Exempt bool `json:"exempt"`
-}
-
-// SetComputeAllowanceOption sets an organization's ceiling.
-type SetComputeAllowanceOption struct {
-	// Seconds per calendar month. Zero clears the limit.
-	LimitSeconds int64 `json:"limit_seconds"`
-}

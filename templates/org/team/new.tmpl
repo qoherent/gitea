@@ -89,16 +89,6 @@
 										<span class="help">{{ctx.Locale.Tr "org.teams.can_create_org_repo_helper"}}</span>
 									</div>
 								</div>
-
-								{{if .IsAdmin}}
-									<div class="field">
-										<div class="ui checkbox">
-											<label for="org_privileged_compute">{{ctx.Locale.Tr "org.teams.org_privileged_compute"}}</label>
-											<input id="org_privileged_compute" name="org_privileged_compute" type="checkbox" {{if .Team.OrgPrivilegedCompute}}checked{{end}}>
-											<span class="help">{{ctx.Locale.Tr "org.teams.org_privileged_compute_helper"}}</span>
-										</div>
-									</div>
-								{{end}}
 							</div>
 							<div class="grouped field">
 								<label>{{ctx.Locale.Tr "org.team_permission_desc"}}</label>

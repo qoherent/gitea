@@ -70,11 +70,7 @@ type CreateTeamForm struct {
 	Permission       string
 	RepoAccess       string
 	CanCreateOrgRepo bool
-	// OrgPrivilegedCompute lets this team's members have runs dispatched to
-	// runners an admin has marked for privileged compute. Not offered for the
-	// owner team, which has fixed permissions; see UpdateTeamPost.
-	OrgPrivilegedCompute bool
-	Visibility           string `binding:"OmitEmpty;In(public,limited,private)"`
+	Visibility       string `binding:"OmitEmpty;In(public,limited,private)"`
 }
 
 // Validate validates the fields

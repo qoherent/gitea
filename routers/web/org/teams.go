@@ -30,7 +30,6 @@ import (
 	"gitea.dev/services/convert"
 	"gitea.dev/services/forms"
 	org_service "gitea.dev/services/org"
-	"gitea.dev/services/privilegedcompute"
 	repo_service "gitea.dev/services/repository"
 )
 
@@ -381,14 +380,7 @@ func NewTeamPost(ctx *context.Context) {
 		AccessMode:              teamPermission,
 		IncludesAllRepositories: includesAllRepositories,
 		CanCreateOrgRepo:        form.CanCreateOrgRepo,
-		// Site admins only, like marking the runner itself. An organization
-		// owner may say who is in their teams; they may not say that one of
-		// those teams reaches hardware the instance owns. The checkbox is not
-		// rendered for anyone else, so a non-admin posting the field
-		// constructed the request by hand: their value is dropped rather than
-		// refused, and the rest of the form is theirs to edit.
-		OrgPrivilegedCompute: ctx.Doer.IsAdmin && form.OrgPrivilegedCompute,
-		Visibility:           org_model.NormalizeTeamVisibility(form.Visibility),
+		Visibility:              org_model.NormalizeTeamVisibility(form.Visibility),
 	}
 
 	units := make([]*org_model.TeamUnit, 0, len(unitPerms))
@@ -426,9 +418,6 @@ func NewTeamPost(ctx *context.Context) {
 			ctx.ServerError("NewTeam", err)
 		}
 		return
-	}
-	if t.OrgPrivilegedCompute {
-		privilegedcompute.TeamGranted(ctx, ctx.Doer, t, true)
 	}
 	log.Trace("Team created: %s/%s", ctx.Org.Organization.Name, t.Name)
 	ctx.Redirect(ctx.Org.OrgLink + "/teams/" + url.PathEscape(t.LowerName))
@@ -561,9 +550,6 @@ func EditTeamPost(ctx *context.Context) {
 	unitPerms := getUnitPerms(ctx.Req.Form, teamPermission)
 	isAuthChanged := false
 	isIncludeAllChanged := false
-	// Only a change is recorded. A team edited for its name should not read
-	// in the trail as a fresh grant.
-	grantChanged := false
 	includesAllRepositories := form.RepoAccess == "all"
 
 	ctx.Data["Title"] = ctx.Org.Organization.FullName
@@ -583,18 +569,9 @@ func EditTeamPost(ctx *context.Context) {
 			t.IncludesAllRepositories = includesAllRepositories
 		}
 		t.CanCreateOrgRepo = form.CanCreateOrgRepo
-		if ctx.Doer.IsAdmin {
-			grantChanged = t.OrgPrivilegedCompute != form.OrgPrivilegedCompute
-			t.OrgPrivilegedCompute = form.OrgPrivilegedCompute
-		}
 		t.Visibility = org_model.NormalizeTeamVisibility(form.Visibility)
 	} else {
 		t.CanCreateOrgRepo = true
-		// Deliberately not granted here. The owner team is given every other
-		// organization-wide permission automatically; privileged compute runs
-		// on hardware the instance owns, so it is always a separate decision.
-		// An organization that wants its owners to have it makes them a team
-		// that carries it.
 		// The owner team must remain listable to all org members.
 		t.Visibility = structs.VisibleTypeLimited
 	}
@@ -630,9 +607,6 @@ func EditTeamPost(ctx *context.Context) {
 			ctx.ServerError("UpdateTeam", err)
 		}
 		return
-	}
-	if grantChanged {
-		privilegedcompute.TeamGranted(ctx, ctx.Doer, t, t.OrgPrivilegedCompute)
 	}
 	ctx.Redirect(ctx.Org.OrgLink + "/teams/" + url.PathEscape(t.LowerName))
 }

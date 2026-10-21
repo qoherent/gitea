@@ -16,7 +16,6 @@ import (
 	"gitea.dev/models/db"
 	"gitea.dev/models/unit"
 	"gitea.dev/modules/actions/jobparser"
-	"gitea.dev/modules/container"
 	"gitea.dev/modules/globallock"
 	"gitea.dev/modules/log"
 	"gitea.dev/modules/setting"
@@ -252,38 +251,6 @@ var pickTaskBatchSize = 100
 // atomically claims it. It iterates through all matching jobs so that a
 // concurrent claim by another runner (which would lose the optimistic lock on
 // job #1) does not leave the remaining jobs permanently unassigned.
-// reservedPrivilegedLabels lists the labels this runner may not answer for:
-// those held by a privileged runner it is not entitled to stand in for.
-//
-// Empty for a privileged runner of the owning organization, which is the one
-// that should be taking the work.
-func reservedPrivilegedLabels(ctx context.Context, runner *ActionRunner) (container.Set[string], error) {
-	var privileged []*ActionRunner
-	if err := db.GetEngine(ctx).
-		Where(builder.Eq{"privileged_compute": true}).
-		And(builder.Neq{"id": runner.ID}).
-		Find(&privileged); err != nil {
-		return nil, err
-	}
-	out := make(container.Set[string])
-	for _, p := range privileged {
-		if runner.PrivilegedCompute && p.OwnerID == runner.OwnerID {
-			continue
-		}
-		out.AddMultiple(p.AgentLabels...)
-	}
-	return out, nil
-}
-
-func claimsReservedLabel(reserved container.Set[string], runsOn []string) bool {
-	for _, label := range runsOn {
-		if reserved.Contains(label) {
-			return true
-		}
-	}
-	return false
-}
-
 // @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute logic
 // @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute::DispatchDecision interface
 func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask, bool, error) {
@@ -384,15 +351,6 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 				continue
 			}
 			if claimsReservedLabel(reserved, v.RunsOn) {
-				continue
-			}
-			// Checked per candidate rather than once for the runner: a global
-			// runner takes work from every owner on the instance, so there is
-			// no single owner whose allowance this poll could be measured
-			// against. Skipped rather than failed -- an owner out of compute
-			// has jobs that wait, which is what a quota means, and the next
-			// owner's job is still handed out.
-			if ComputeExhausted(ctx, v.OwnerID) {
 				continue
 			}
 			task, ok, err := claimJobForRunner(ctx, runner, v)
@@ -614,12 +572,6 @@ func UpdateTaskByState(ctx context.Context, runnerID int64, state *runnerv1.Task
 			}, nil, "status", "stopped"); err != nil {
 				return err
 			}
-			// Best-effort, and deliberately not propagated: a job that ran and
-			// then reports a failure because its cost could not be written is
-			// worse than a job whose cost was not counted.
-			if err := RecordComputeUsage(ctx, task); err != nil {
-				log.Error("actions: could not record compute usage for task %d: %v", task.ID, err)
-			}
 		} else {
 			// Force update ActionTask.Updated to avoid the task being judged as a zombie task
 			task.Updated = timeutil.TimeStampNow()
@@ -722,13 +674,6 @@ func StopTask(ctx context.Context, taskID int64, status Status) error {
 
 	if err := UpdateTask(ctx, task, "status", "stopped"); err != nil {
 		return err
-	}
-
-	// The other place a task stops: cancelled, timed out, or reaped as a
-	// zombie. It still occupied a machine for the time it ran, so it still
-	// counts.
-	if err := RecordComputeUsage(ctx, task); err != nil {
-		log.Error("actions: could not record compute usage for task %d: %v", task.ID, err)
 	}
 
 	if err := task.LoadAttributes(ctx); err != nil {

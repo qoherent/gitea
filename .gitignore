@@ -120,7 +120,3 @@ prime/
 
 # A Makefile for custom make targets
 Makefile.local
-
-# Local throwaway instance created by run-local.sh
-/local-instance
-/run-local.sh

@@ -230,11 +230,6 @@ type ActionRunner struct {
 	Disabled  bool                 `json:"disabled"`
 	Ephemeral bool                 `json:"ephemeral"`
 	Labels    []*ActionRunnerLabel `json:"labels"`
-	// Scope is the runner's registration scope: "global", "owner" or
-	// "repository". A global runner accepts jobs from every repository on the
-	// instance, matched on label text alone, which the listings cannot
-	// otherwise be used to detect.
-	Scope string `json:"scope"`
 	// PrivilegedCompute marks a runner whose jobs may only come from a team
 	// holding the organization's privileged-compute grant. Reported so that a
 	// surface listing an organization's runners can say which of them are

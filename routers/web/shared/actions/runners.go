@@ -21,7 +21,6 @@ import (
 	shared_user "gitea.dev/routers/web/shared/user"
 	"gitea.dev/services/context"
 	"gitea.dev/services/forms"
-	"gitea.dev/services/privilegedcompute"
 )
 
 const (
@@ -274,31 +273,7 @@ func RunnersEditPost(ctx *context.Context) {
 	form := web.GetForm(ctx).(*forms.EditRunnerForm)
 	runner.Description = form.Description
 
-	cols := []string{"description"}
-
-	// Privileged compute is a site-admin decision, and only for a runner
-	// owned by an organization: the grant that gates it is per-organization,
-	// so marking a repository-scoped or global runner privileged would create
-	// a runner that can never be dispatched to. CreateTaskForRunner fails
-	// closed on that state; refusing to create it here is the other half.
-	//
-	// The checkbox is not rendered for anyone else, so a non-admin posting the
-	// field is someone who constructed the request by hand. Their value is
-	// ignored rather than refused: the rest of the form is theirs to edit.
-	if ctx.Doer != nil && ctx.Doer.IsAdmin {
-		if form.PrivilegedCompute && runner.OwnerID == 0 {
-			ctx.Flash.Error(ctx.Tr("actions.runners.privileged_compute_needs_org"))
-			ctx.Redirect(redirectTo)
-			return
-		}
-		if runner.PrivilegedCompute != form.PrivilegedCompute {
-			runner.PrivilegedCompute = form.PrivilegedCompute
-			cols = append(cols, "privileged_compute")
-			privilegedcompute.RunnerMarked(ctx, ctx.Doer, runner, form.PrivilegedCompute)
-		}
-	}
-
-	err = actions_model.UpdateRunner(ctx, runner, cols...)
+	err = actions_model.UpdateRunner(ctx, runner, "description")
 	if err != nil {
 		log.Warn("RunnerDetailsEditPost.UpdateRunner failed: %v, url: %s", err, ctx.Req.URL)
 		ctx.Flash.Warning(ctx.Tr("actions.runners.update_runner_failed"))
