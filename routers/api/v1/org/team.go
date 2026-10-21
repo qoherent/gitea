@@ -24,6 +24,7 @@ import (
 	"gitea.dev/services/convert"
 	feed_service "gitea.dev/services/feed"
 	org_service "gitea.dev/services/org"
+	"gitea.dev/services/privilegedcompute"
 	repo_service "gitea.dev/services/repository"
 )
 
@@ -231,9 +232,9 @@ func CreateTeam(ctx *context.APIContext) {
 		// carries nothing else, so a refusal is the whole answer; this carries
 		// a team, and refusing the lot would stop an owner editing a team's
 		// name over a field their form never showed them.
-		OrgPrivilegedCompute:    ctx.Doer.IsAdmin && form.PrivilegedCompute,
-		AccessMode:              teamPermission,
-		Visibility:              organization.NormalizeTeamVisibility(string(form.Visibility)),
+		OrgPrivilegedCompute: ctx.Doer.IsAdmin && form.PrivilegedCompute,
+		AccessMode:           teamPermission,
+		Visibility:           organization.NormalizeTeamVisibility(string(form.Visibility)),
 	}
 
 	if team.AccessMode < perm.AccessModeAdmin {
@@ -250,6 +251,7 @@ func CreateTeam(ctx *context.APIContext) {
 		attachAdminTeamUnits(team)
 	}
 
+	granting := team.OrgPrivilegedCompute
 	if err := org_service.NewTeam(ctx, team); err != nil {
 		if organization.IsErrTeamAlreadyExist(err) {
 			ctx.APIError(http.StatusUnprocessableEntity, err.Error())
@@ -257,6 +259,9 @@ func CreateTeam(ctx *context.APIContext) {
 			ctx.APIErrorInternal(err)
 		}
 		return
+	}
+	if granting {
+		privilegedcompute.TeamGranted(ctx, ctx.Doer, team, true)
 	}
 
 	apiTeam, err := convert.ToTeam(ctx, team, true)
@@ -309,7 +314,11 @@ func EditTeam(ctx *context.APIContext) {
 	// No IsOwnerTeam special case either, unlike CanCreateOrgRepo above: the
 	// owner team is not given this grant automatically, so it is not forced on
 	// here.
+	grantChanged := false
 	if form.PrivilegedCompute != nil && ctx.Doer.IsAdmin {
+		// Only a change is recorded, so an edit that merely repeats the
+		// current value does not read in the trail as a fresh grant.
+		grantChanged = team.OrgPrivilegedCompute != *form.PrivilegedCompute
 		team.OrgPrivilegedCompute = *form.PrivilegedCompute
 	}
 
@@ -354,6 +363,9 @@ func EditTeam(ctx *context.APIContext) {
 	if err := org_service.UpdateTeam(ctx, team, isAuthChanged, isIncludeAllChanged); err != nil {
 		ctx.APIErrorInternal(err)
 		return
+	}
+	if grantChanged {
+		privilegedcompute.TeamGranted(ctx, ctx.Doer, team, team.OrgPrivilegedCompute)
 	}
 
 	apiTeam, err := convert.ToTeam(ctx, team)

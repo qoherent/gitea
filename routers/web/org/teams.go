@@ -30,6 +30,7 @@ import (
 	"gitea.dev/services/convert"
 	"gitea.dev/services/forms"
 	org_service "gitea.dev/services/org"
+	"gitea.dev/services/privilegedcompute"
 	repo_service "gitea.dev/services/repository"
 )
 
@@ -386,8 +387,8 @@ func NewTeamPost(ctx *context.Context) {
 		// rendered for anyone else, so a non-admin posting the field
 		// constructed the request by hand: their value is dropped rather than
 		// refused, and the rest of the form is theirs to edit.
-		OrgPrivilegedCompute:    ctx.Doer.IsAdmin && form.OrgPrivilegedCompute,
-		Visibility:              org_model.NormalizeTeamVisibility(form.Visibility),
+		OrgPrivilegedCompute: ctx.Doer.IsAdmin && form.OrgPrivilegedCompute,
+		Visibility:           org_model.NormalizeTeamVisibility(form.Visibility),
 	}
 
 	units := make([]*org_model.TeamUnit, 0, len(unitPerms))
@@ -425,6 +426,9 @@ func NewTeamPost(ctx *context.Context) {
 			ctx.ServerError("NewTeam", err)
 		}
 		return
+	}
+	if t.OrgPrivilegedCompute {
+		privilegedcompute.TeamGranted(ctx, ctx.Doer, t, true)
 	}
 	log.Trace("Team created: %s/%s", ctx.Org.Organization.Name, t.Name)
 	ctx.Redirect(ctx.Org.OrgLink + "/teams/" + url.PathEscape(t.LowerName))
@@ -557,6 +561,9 @@ func EditTeamPost(ctx *context.Context) {
 	unitPerms := getUnitPerms(ctx.Req.Form, teamPermission)
 	isAuthChanged := false
 	isIncludeAllChanged := false
+	// Only a change is recorded. A team edited for its name should not read
+	// in the trail as a fresh grant.
+	grantChanged := false
 	includesAllRepositories := form.RepoAccess == "all"
 
 	ctx.Data["Title"] = ctx.Org.Organization.FullName
@@ -577,6 +584,7 @@ func EditTeamPost(ctx *context.Context) {
 		}
 		t.CanCreateOrgRepo = form.CanCreateOrgRepo
 		if ctx.Doer.IsAdmin {
+			grantChanged = t.OrgPrivilegedCompute != form.OrgPrivilegedCompute
 			t.OrgPrivilegedCompute = form.OrgPrivilegedCompute
 		}
 		t.Visibility = org_model.NormalizeTeamVisibility(form.Visibility)
@@ -622,6 +630,9 @@ func EditTeamPost(ctx *context.Context) {
 			ctx.ServerError("UpdateTeam", err)
 		}
 		return
+	}
+	if grantChanged {
+		privilegedcompute.TeamGranted(ctx, ctx.Doer, t, t.OrgPrivilegedCompute)
 	}
 	ctx.Redirect(ctx.Org.OrgLink + "/teams/" + url.PathEscape(t.LowerName))
 }

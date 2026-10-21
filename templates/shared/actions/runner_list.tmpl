@@ -3,6 +3,12 @@
 	<h4 class="ui top attached header">
 		{{ctx.Locale.Tr "actions.runners.runner_manage_panel"}} ({{ctx.Locale.Tr "admin.total" .Total}})
 		<div class="ui right">
+			{{/* Registering a runner is offering to execute other people's jobs,
+			     so the panel is drawn only for somebody who may: a site
+			     administrator, or an organization granted privileged compute.
+			     Withheld rather than shown empty -- a blank token reads as a
+			     fault rather than as a decision. */}}
+			{{if .MayRegisterRunner}}
 			<div class="ui top right pointing dropdown jump">
 				<button class="ui primary tiny button">
 					{{ctx.Locale.Tr "actions.runners.new"}}
@@ -32,6 +38,7 @@
 					</div>
 				</div>
 			</div>
+			{{end}}
 
 		</div>
 	</h4>

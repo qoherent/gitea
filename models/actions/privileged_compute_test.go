@@ -77,4 +77,3 @@ func TestSetRunnerPrivilegedComputeMarksAnOrganizationsRunner(t *testing.T) {
 	assert.NoError(t, SetRunnerPrivilegedCompute(t.Context(), owned, false))
 	assert.False(t, unittest.AssertExistsAndLoadBean(t, &ActionRunner{ID: owned.ID}).PrivilegedCompute)
 }
-
