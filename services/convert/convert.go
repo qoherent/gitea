@@ -744,6 +744,8 @@ func ToActionRunner(ctx context.Context, runner *actions_model.ActionRunner) *ap
 		Ephemeral: runner.Ephemeral,
 		Labels:    labels,
 		Scope:     string(runner.Scope()),
+
+		PrivilegedCompute: runner.PrivilegedCompute,
 	}
 }
 

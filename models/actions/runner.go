@@ -391,6 +391,35 @@ func UpdateRunner(ctx context.Context, r *ActionRunner, cols ...string) error {
 	return err
 }
 
+// SetRunnerPrivilegedCompute marks or unmarks a runner as privileged.
+//
+// Refuses a runner with no owning organization, for the reason
+// CreateTaskForRunner fails closed on one: the grant that gates a privileged
+// runner is per-organization, so such a runner has nothing to check against
+// and could never be dispatched to. The web form refuses it too; this is the
+// same refusal for the API.
+//
+// The task version is bumped as SetRunnerDisabled bumps it, because which jobs
+// this runner may be handed has changed.
+//
+// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute::RunnerMarking interface
+func SetRunnerPrivilegedCompute(ctx context.Context, runner *ActionRunner, privileged bool) error {
+	if privileged && runner.OwnerID == 0 {
+		return util.NewInvalidArgumentErrorf("a privileged runner must belong to an organization")
+	}
+	if runner.PrivilegedCompute == privileged {
+		return nil
+	}
+
+	return db.WithTx(ctx, func(ctx context.Context) error {
+		runner.PrivilegedCompute = privileged
+		if err := UpdateRunner(ctx, runner, "privileged_compute"); err != nil {
+			return err
+		}
+		return IncreaseTaskVersion(ctx, runner.OwnerID, runner.RepoID)
+	})
+}
+
 func SetRunnerDisabled(ctx context.Context, runner *ActionRunner, isDisabled bool) error {
 	if runner.IsDisabled == isDisabled {
 		return nil

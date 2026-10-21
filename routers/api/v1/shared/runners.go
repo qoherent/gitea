@@ -132,14 +132,36 @@ func UpdateRunner(ctx *context.APIContext, ownerID, repoID, runnerID int64) {
 	}
 
 	form := web.GetForm(ctx).(*api.EditActionRunnerOption)
-	if form.Disabled == nil {
+	if form.Disabled == nil && form.PrivilegedCompute == nil {
 		ctx.APIError(http.StatusUnprocessableEntity, "[Disabled]: Required")
 		return
 	}
 
-	if err := actions_model.SetRunnerDisabled(ctx, runner, *form.Disabled); err != nil {
-		ctx.APIErrorInternal(err)
-		return
+	if form.Disabled != nil {
+		if err := actions_model.SetRunnerDisabled(ctx, runner, *form.Disabled); err != nil {
+			ctx.APIErrorInternal(err)
+			return
+		}
+	}
+
+	// Privileged compute is a site-admin decision, as it is on the web form.
+	// The caller here has already passed the owner check for this runner's
+	// organization, which is not the same thing: an organization owner may say
+	// which of their teams reaches privileged hardware, and only an
+	// administrator may say that a machine is privileged at all.
+	if form.PrivilegedCompute != nil {
+		if !ctx.Doer.IsAdmin {
+			ctx.APIError(http.StatusForbidden, "privileged compute is a site-admin decision")
+			return
+		}
+		if err := actions_model.SetRunnerPrivilegedCompute(ctx, runner, *form.PrivilegedCompute); err != nil {
+			if errors.Is(err, util.ErrInvalidArgument) {
+				ctx.APIError(http.StatusUnprocessableEntity, err.Error())
+				return
+			}
+			ctx.APIErrorInternal(err)
+			return
+		}
 	}
 
 	GetRunner(ctx, ownerID, repoID, runnerID)
