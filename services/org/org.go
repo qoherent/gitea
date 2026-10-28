@@ -17,9 +17,11 @@ import (
 	secret_model "gitea.dev/models/secret"
 	user_model "gitea.dev/models/user"
 	issue_indexer "gitea.dev/modules/indexer/issues"
+	"gitea.dev/modules/setting"
 	"gitea.dev/modules/storage"
 	"gitea.dev/modules/structs"
 	"gitea.dev/modules/util"
+	packages_service "gitea.dev/services/packages"
 	repo_service "gitea.dev/services/repository"
 )
 
@@ -58,6 +60,19 @@ func DeleteOrganization(ctx context.Context, org *org_model.Organization, purge 
 			err := repo_service.DeleteOwnerRepositoriesDirectly(ctx, org.AsUser())
 			if err != nil {
 				return err
+			}
+
+			// Packages block deletion exactly as repositories do, and a purge
+			// that cleared one and not the other could never complete: the
+			// ownership check below refuses, and the web UI gives no way to
+			// clear a container package's untagged manifest versions in bulk,
+			// so there was no sequence of actions that got an organization
+			// deleted once it had pushed an image. Deleting a user already
+			// does this (services/user.DeleteUser); an organization is a user.
+			if setting.Packages.Enabled {
+				if _, err := packages_service.RemoveAllPackages(ctx, org.ID); err != nil {
+					return err
+				}
 			}
 		}
 
