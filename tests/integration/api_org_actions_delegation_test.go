@@ -19,6 +19,10 @@ import (
 // variables -- to a team its owners have given write access to the Actions
 // unit. Everything else about the organization stays owner-only.
 //
+// It composes with PrivilegedCompute rather than replacing it: registering a
+// runner needs this *and* the organization's own grant, which is a fact about
+// the organization and not about the person, so an owner is refused it too.
+//
 // The shape of each case is the same and is the point: the same member, the
 // same request, refused before the delegation and allowed after it. Nothing
 // in the fixtures carries the Actions unit (no `type: 10` in team_unit.yml),
@@ -65,15 +69,22 @@ func TestAPIOrgActionsDelegation(t *testing.T) {
 	})
 
 	t.Run("TheSameMemberMayNowManageActions", func(t *testing.T) {
-		req := NewRequest(t, http.MethodPost, registrationToken).AddTokenAuth(memberToken)
-		resp := MakeRequest(t, req, http.StatusOK)
-		minted := DecodeJSON(t, resp, &struct {
-			Token string `json:"token"`
-		}{})
-		assert.NotEmpty(t, minted.Token)
-
 		MakeRequest(t, NewRequest(t, http.MethodGet, secrets).AddTokenAuth(memberToken), http.StatusOK)
 		MakeRequest(t, NewRequest(t, http.MethodGet, variables).AddTokenAuth(memberToken), http.StatusOK)
+	})
+
+	t.Run("RegisteringARunnerAlsoNeedsTheOrganizationsOwnGrant", func(t *testing.T) {
+		// The two gates answer different questions and both have to pass.
+		// This one asks *who in the organization* may touch its Actions
+		// settings; PrivilegedCompute asks *which organizations* may bring a
+		// machine onto the instance at all, which is not a question about a
+		// person -- so an owner is refused here too, and that is the point.
+		// org3 holds no grant in the fixtures.
+		for _, token := range []string{memberToken, ownerToken} {
+			resp := MakeRequest(t, NewRequest(t, http.MethodPost, registrationToken).AddTokenAuth(token),
+				http.StatusForbidden)
+			assert.Contains(t, resp.Body.String(), "granted privileged compute")
+		}
 	})
 
 	t.Run("AndNothingElseAboutTheOrganization", func(t *testing.T) {
@@ -105,7 +116,7 @@ func TestAPIOrgActionsDelegation(t *testing.T) {
 	})
 
 	t.Run("AnOwnerIsStillAnOwner", func(t *testing.T) {
-		MakeRequest(t, NewRequest(t, http.MethodPost, registrationToken).AddTokenAuth(ownerToken), http.StatusOK)
 		MakeRequest(t, NewRequest(t, http.MethodGet, secrets).AddTokenAuth(ownerToken), http.StatusOK)
+		MakeRequest(t, NewRequest(t, http.MethodGet, variables).AddTokenAuth(ownerToken), http.StatusOK)
 	})
 }
