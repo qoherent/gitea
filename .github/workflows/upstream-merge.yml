@@ -28,6 +28,18 @@ permissions:
   issues: write
 
 env:
+  # Pin every `gh` call in this workflow to this repository.
+  #
+  # Without it they default to the *parent*, because this is a fork: `gh pr
+  # create` with no `--repo` takes the upstream as its base repository, so the
+  # weekly merge would open its pull request against go-gitea/gitea rather
+  # than against this fork's own main. The same default reaches the `gh issue`
+  # and `gh label` calls below.
+  #
+  # One variable rather than seven flags: `gh` reads GH_REPO for every
+  # subcommand, so a call added later is pinned without anybody remembering
+  # to pin it -- which is the failure this is for.
+  GH_REPO: ${{ github.repository }}
   UPSTREAM_REMOTE: https://github.com/go-gitea/gitea.git
   # A repository variable, so following a new release line is a settings
   # change rather than a commit. Falls back to the line this fork was built
