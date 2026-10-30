@@ -74,11 +74,36 @@ func reqOrgActionsManagement() func(ctx *context.APIContext) {
 			return
 		}
 		for _, team := range teams {
-			if team.UnitAccessMode(ctx, unit.TypeActions) >= perm.AccessModeWrite {
+			if teamIsGrantedActions(ctx, team) {
 				return
 			}
 		}
 
 		ctx.APIError(http.StatusForbidden, "Must be an organization owner, or a member of a team with write access to Actions")
 	}
+}
+
+// teamIsGrantedActions reports whether a team has been given write on the
+// Actions unit explicitly, rather than inheriting it.
+//
+// Not Team.UnitAccessMode, which since v28 floors every unit at the team's
+// own access mode: a team with write access and no Actions unit at all
+// reports write on Actions there. Asking it would make this check "a member
+// of any team that can write", which is most of an organization and is not a
+// delegation anybody made.
+//
+// v1.27 answered AccessModeNone for an ungranted unit, so this read the way
+// it was meant to until the port. The test that caught it is
+// TestAPIOrgActionsDelegation's first case.
+func teamIsGrantedActions(ctx *context.APIContext, team *organization.Team) bool {
+	if err := team.LoadUnits(ctx); err != nil {
+		// Fail closed: an unreadable delegation is not a delegation.
+		return false
+	}
+	for _, granted := range team.Units {
+		if granted.Type == unit.TypeActions && granted.AccessMode >= perm.AccessModeWrite {
+			return true
+		}
+	}
+	return false
 }
