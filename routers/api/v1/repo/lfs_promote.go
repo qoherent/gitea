@@ -79,7 +79,7 @@ func PromoteToLFS(ctx *context.APIContext) {
 		ctx.APIError(http.StatusUnprocessableEntity, "LFS is not enabled on this server")
 		return
 	}
-	opts := web.GetForm(ctx).(*api.PromoteToLFSOptions)
+	opts := web.GetForm[*api.PromoteToLFSOptions](ctx)
 	if len(opts.Files) == 0 {
 		ctx.APIError(http.StatusUnprocessableEntity, "no files given")
 		return
@@ -89,7 +89,7 @@ func PromoteToLFS(ctx *context.APIContext) {
 	if branch == "" {
 		branch = ctx.Repo.Repository.DefaultBranch
 	}
-	commit, err := ctx.Repo.GitRepo.GetBranchCommit(branch)
+	commit, err := ctx.Repo.GitRepo.GetBranchCommit(ctx, branch)
 	if err != nil {
 		ctx.APIErrorNotFound("branch")
 		return
@@ -101,19 +101,19 @@ func PromoteToLFS(ctx *context.APIContext) {
 	// Pass one reads and hashes, and writes nothing. A promote that turns out
 	// to be refused must not have left objects in the store behind it.
 	for _, filePath := range deduplicate(opts.Files) {
-		blob, err := commit.GetBlobByPath(filePath)
+		blob, err := commit.GetBlobByPath(ctx, ctx.Repo.GitRepo, filePath)
 		if err != nil {
 			ctx.APIErrorNotFound("file")
 			return
 		}
-		dataRc, err := blob.DataAsync()
+		dataRc, err := blob.DataAsync(ctx)
 		if err != nil {
 			ctx.APIErrorInternal(err)
 			return
 		}
 
 		var pointer lfs_module.Pointer
-		if blob.Size() <= maxPointerSize {
+		if blob.Size(ctx) <= maxPointerSize {
 			content, readErr := io.ReadAll(dataRc)
 			_ = dataRc.Close()
 			if readErr != nil {
@@ -171,12 +171,12 @@ func PromoteToLFS(ctx *context.APIContext) {
 	for _, entry := range entriesByOID {
 		if !entry.exists {
 			// Reopened: pass one exhausted the reader hashing it.
-			srcBlob, blobErr := commit.GetBlobByPath(entry.filePaths[0])
+			srcBlob, blobErr := commit.GetBlobByPath(ctx, ctx.Repo.GitRepo, entry.filePaths[0])
 			if blobErr != nil {
 				ctx.APIErrorInternal(blobErr)
 				return
 			}
-			dataRc, blobErr := srcBlob.DataAsync()
+			dataRc, blobErr := srcBlob.DataAsync(ctx)
 			if blobErr != nil {
 				ctx.APIErrorInternal(blobErr)
 				return

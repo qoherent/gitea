@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	audit_model "gitea.dev/models/audit"
 	"gitea.dev/models/auth"
 	user_model "gitea.dev/models/user"
 	"gitea.dev/modules/auth/httpauth"
@@ -20,13 +21,14 @@ import (
 	"gitea.dev/modules/log"
 	"gitea.dev/modules/setting"
 	"gitea.dev/modules/templates"
+	"gitea.dev/modules/util"
 	"gitea.dev/modules/web"
+	"gitea.dev/services/audit"
 	auth_service "gitea.dev/services/auth"
 	"gitea.dev/services/context"
 	"gitea.dev/services/forms"
 	"gitea.dev/services/oauth2_provider"
 
-	"gitea.com/go-chi/binding"
 	jwt "github.com/golang-jwt/jwt/v5"
 )
 
@@ -119,16 +121,7 @@ func InfoOAuth(ctx *context.Context) {
 		Picture:           ctx.Doer.AvatarLink(ctx),
 	}
 
-	var accessTokenScope auth.AccessTokenScope
-	if auHead := ctx.Req.Header.Get("Authorization"); auHead != "" {
-		if parsed, ok := httpauth.ParseAuthorizationHeader(auHead); ok && parsed.BearerToken != nil {
-			accessTokenScope, _ = auth_service.GetOAuthAccessTokenScopeAndUserID(ctx, parsed.BearerToken.Token)
-		}
-	}
-
-	// since version 1.22 does not verify if groups should be public-only,
-	// onlyPublicGroups will be set only if 'public-only' is included in a valid scope
-	onlyPublicGroups, _ := accessTokenScope.PublicOnly()
+	onlyPublicGroups, _ := tokenScope.PublicOnly()
 	groups, err := oauth2_provider.GetOAuthGroupsForUser(ctx, ctx.Doer, onlyPublicGroups)
 	if err != nil {
 		ctx.ServerError("Oauth groups for user", err)
@@ -139,12 +132,21 @@ func InfoOAuth(ctx *context.Context) {
 	ctx.JSON(http.StatusOK, response)
 }
 
+// RFC 6749 section 2.3.1: client_secret_basic credentials are form-urlencoded
+func parseClientSecretBasic(authHeader string) (clientID, clientSecret string, ok bool) {
+	parsed, _ := httpauth.ParseAuthorizationHeader(authHeader)
+	if parsed.BasicAuth == nil {
+		return "", "", false
+	}
+	clientID, errID := url.QueryUnescape(parsed.BasicAuth.Username)
+	clientSecret, errSecret := url.QueryUnescape(parsed.BasicAuth.Password)
+	return clientID, clientSecret, errID == nil && errSecret == nil
+}
+
 // IntrospectOAuth introspects an oauth token
 func IntrospectOAuth(ctx *context.Context) {
 	var introspectingApp *auth.OAuth2Application
-	authHeader := ctx.Req.Header.Get("Authorization")
-	if parsed, ok := httpauth.ParseAuthorizationHeader(authHeader); ok && parsed.BasicAuth != nil {
-		clientID, clientSecret := parsed.BasicAuth.Username, parsed.BasicAuth.Password
+	if clientID, clientSecret, ok := parseClientSecretBasic(ctx.Req.Header.Get("Authorization")); ok {
 		app, err := auth.GetOAuth2ApplicationByClientID(ctx, clientID)
 		if err != nil && !auth.IsErrOauthClientIDInvalid(err) {
 			// this is likely a database error; log it and respond without details
@@ -172,7 +174,7 @@ func IntrospectOAuth(ctx *context.Context) {
 		jwt.RegisteredClaims
 	}
 
-	form := web.GetForm(ctx).(*forms.IntrospectTokenForm)
+	form := web.GetForm[*forms.IntrospectTokenForm](ctx)
 	token, err := oauth2_provider.ParseToken(form.Token, oauth2_provider.DefaultSigningKey)
 	if err != nil {
 		// RFC 7662 returns inactive token metadata for invalid/unknown tokens.
@@ -221,18 +223,8 @@ func oauthDoerAuthorizePreCheck(ctx *context.Context, formState string) bool {
 
 // AuthorizeOAuth manages authorize requests
 func AuthorizeOAuth(ctx *context.Context) {
-	form := web.GetForm(ctx).(*forms.AuthorizationForm)
+	form := web.GetForm[*forms.AuthorizationForm](ctx)
 	if !oauthDoerAuthorizePreCheck(ctx, form.State) {
-		return
-	}
-	errs := binding.Errors{}
-	errs = form.Validate(ctx.Req, errs)
-	if len(errs) > 0 {
-		var errstring strings.Builder
-		for _, e := range errs {
-			errstring.WriteString(e.Error() + "\n")
-		}
-		ctx.ServerError("AuthorizeOAuth: Validate: ", fmt.Errorf("errors occurred during validation: %s", errstring.String()))
 		return
 	}
 
@@ -331,6 +323,16 @@ func AuthorizeOAuth(ctx *context.Context) {
 		return
 	}
 
+	// Upstream's defaulting, kept: an authorization that names no scope is
+	// asking for what the grant already holds.
+	if grant != nil && form.Scope == "" {
+		form.Scope = grant.Scope
+	}
+	var addedScopes []string
+	if grant != nil {
+		addedScopes, _ = util.DiffSlice(strings.Fields(grant.Scope), strings.Fields(form.Scope))
+	}
+
 	grant, ok := settleFirstPartyGrant(ctx, app, grant, form)
 	if !ok {
 		return
@@ -367,6 +369,7 @@ func AuthorizeOAuth(ctx *context.Context) {
 
 	// check if additional scopes
 	ctx.Data["AdditionalScopes"] = oauth2_provider.GrantAdditionalScopes(form.Scope) != auth.AccessTokenScopeAll
+	ctx.Data["AddedScopes"] = addedScopes
 
 	// show authorize page to grant access
 	ctx.Data["Application"] = app
@@ -409,7 +412,7 @@ func AuthorizeOAuth(ctx *context.Context) {
 
 // GrantApplicationOAuth manages the post request submitted when a user grants access to an application
 func GrantApplicationOAuth(ctx *context.Context) {
-	form := web.GetForm(ctx).(*forms.GrantApplicationForm)
+	form := web.GetForm[*forms.GrantApplicationForm](ctx)
 	if !oauthDoerAuthorizePreCheck(ctx, form.State) {
 		return
 	}
@@ -449,6 +452,8 @@ func GrantApplicationOAuth(ctx *context.Context) {
 			}, form.RedirectURI)
 			return
 		}
+
+		audit.Record(ctx, audit_model.UserOAuth2ApplicationGrant, ctx.Doer, "oauth2_application", app.Name, "granted_scope", form.Scope)
 	} else if !acceptGrantedScope(ctx, grant, form) {
 		return
 	}
@@ -477,19 +482,6 @@ func GrantApplicationOAuth(ctx *context.Context) {
 	ctx.Redirect(redirect.String(), http.StatusSeeOther)
 }
 
-// OIDCWellKnown generates JSON so OIDC clients know Gitea's capabilities
-func OIDCWellKnown(ctx *context.Context) {
-	if !setting.OAuth2.Enabled {
-		http.NotFound(ctx.Resp, ctx.Req)
-		return
-	}
-	jwtRegisteredClaims := oauth2_provider.NewJwtRegisteredClaimsFromUser("well-known", 0, nil)
-	ctx.Data["OidcIssuer"] = jwtRegisteredClaims.Issuer // use the consistent issuer from the JWT registered claims
-	ctx.Data["OidcBaseUrl"] = strings.TrimSuffix(setting.AppURL, "/")
-	ctx.Data["SigningKeyMethodAlg"] = oauth2_provider.DefaultSigningKey.SigningMethod().Alg()
-	ctx.JSONTemplate("user/auth/oidc_wellknown")
-}
-
 // OIDCKeys generates the JSON Web Key Set
 func OIDCKeys(ctx *context.Context) {
 	jwk, err := oauth2_provider.DefaultSigningKey.ToJWK()
@@ -516,19 +508,18 @@ func OIDCKeys(ctx *context.Context) {
 
 // AccessTokenOAuth manages all access token requests by the client
 func AccessTokenOAuth(ctx *context.Context) {
-	form := *web.GetForm(ctx).(*forms.AccessTokenForm)
+	form := *web.GetForm[*forms.AccessTokenForm](ctx)
 	// if there is no ClientID or ClientSecret in the request body, fill these fields by the Authorization header and ensure the provided field matches the Authorization header
 	if form.ClientID == "" || form.ClientSecret == "" {
 		if authHeader := ctx.Req.Header.Get("Authorization"); authHeader != "" {
-			parsed, ok := httpauth.ParseAuthorizationHeader(authHeader)
-			if !ok || parsed.BasicAuth == nil {
+			clientID, clientSecret, ok := parseClientSecretBasic(authHeader)
+			if !ok {
 				handleAccessTokenError(ctx, oauth2_provider.AccessTokenError{
 					ErrorCode:        oauth2_provider.AccessTokenErrorCodeInvalidRequest,
 					ErrorDescription: "cannot parse basic auth header",
 				})
 				return
 			}
-			clientID, clientSecret := parsed.BasicAuth.Username, parsed.BasicAuth.Password
 			// validate that any fields present in the form match the Basic auth header
 			if form.ClientID != "" && form.ClientID != clientID {
 				handleAccessTokenError(ctx, oauth2_provider.AccessTokenError{
@@ -602,7 +593,7 @@ func handleRefreshToken(ctx *context.Context, form forms.AccessTokenForm, server
 	}
 
 	token, err := oauth2_provider.ParseToken(form.RefreshToken, serverKey)
-	if err != nil {
+	if err != nil || token.Kind != oauth2_provider.KindRefreshToken {
 		handleAccessTokenError(ctx, oauth2_provider.AccessTokenError{
 			ErrorCode:        oauth2_provider.AccessTokenErrorCodeUnauthorizedClient,
 			ErrorDescription: "unable to parse refresh token",

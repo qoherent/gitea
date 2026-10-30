@@ -6,7 +6,6 @@ package auth
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"strings"
@@ -25,9 +24,10 @@ import (
 // If a device uses the token to login into the instance, a fresh token gets generated which has the same id but a new hash.
 
 var (
-	ErrAuthTokenInvalidFormat = util.NewInvalidArgumentErrorf("auth token has an invalid format")
-	ErrAuthTokenExpired       = util.NewInvalidArgumentErrorf("auth token has expired")
-	ErrAuthTokenInvalidHash   = util.NewInvalidArgumentErrorf("auth token is invalid")
+	ErrAuthTokenInvalidFormat    = util.NewInvalidArgumentErrorf("auth token has an invalid format")
+	ErrAuthTokenExpired          = util.NewInvalidArgumentErrorf("auth token has expired")
+	ErrAuthTokenInvalidHash      = util.NewInvalidArgumentErrorf("auth token is invalid")
+	ErrAuthTokenRotationConflict = util.NewInvalidArgumentErrorf("auth token was rotated by another request")
 )
 
 func CheckAuthToken(ctx context.Context, value string) (*auth_model.AuthToken, error) {
@@ -54,7 +54,7 @@ func CheckAuthToken(ctx context.Context, value string) (*auth_model.AuthToken, e
 
 	hashedToken := sha256.Sum256([]byte(parts[1]))
 
-	if subtle.ConstantTimeCompare([]byte(t.TokenHash), []byte(hex.EncodeToString(hashedToken[:]))) == 0 {
+	if !util.CryptoConstTimeEqual(t.TokenHash, hex.EncodeToString(hashedToken[:])) {
 		// If an attacker steals a token and uses the token to create a new session the hash gets updated.
 		// When the victim uses the old token the hashes don't match anymore and the victim should be notified about the compromised token.
 		// Revoke the token so the attacker's rotated token (which shares this ID) can no longer be used.
@@ -77,8 +77,22 @@ func RegenerateAuthToken(ctx context.Context, t *auth_model.AuthToken) (*auth_mo
 		ExpiresUnix: timeutil.TimeStampNow().AddDuration(time.Duration(setting.LogInRememberDays*24) * time.Hour),
 	}
 
-	if err := auth_model.UpdateAuthTokenByID(ctx, newToken); err != nil {
+	updated, err := auth_model.UpdateAuthTokenByID(ctx, newToken, t.TokenHash)
+	if err != nil {
 		return nil, "", err
+	}
+	if !updated {
+		current, err := auth_model.GetAuthTokenByID(ctx, t.ID)
+		if errors.Is(err, util.ErrNotExist) {
+			return nil, "", ErrAuthTokenExpired
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		if current.ExpiresUnix < timeutil.TimeStampNow() {
+			return nil, "", ErrAuthTokenExpired
+		}
+		return nil, "", ErrAuthTokenRotationConflict
 	}
 
 	return newToken, token, nil

@@ -12,6 +12,7 @@ import (
 
 	actions_model "gitea.dev/models/actions"
 	"gitea.dev/models/db"
+	organization_model "gitea.dev/models/organization"
 	"gitea.dev/modules/log"
 	"gitea.dev/modules/setting"
 	"gitea.dev/modules/templates"
@@ -138,31 +139,47 @@ func Runners(ctx *context.Context) {
 		return
 	}
 
-	// ownid=0,repo_id=0,means this token is used for global
-	var token *actions_model.ActionRunnerToken
-	token, err = actions_model.GetLatestRunnerToken(ctx, opts.OwnerID, opts.RepoID)
-	if errors.Is(err, util.ErrNotExist) || (token != nil && !token.IsActive) {
-		token, err = actions_model.NewRunnerToken(ctx, opts.OwnerID, opts.RepoID)
+	// Registering a runner is offering to execute other people's jobs, so the
+	// token is minted only for somebody who may bring a machine onto the
+	// instance: a site admin, or an organization the instance has granted
+	// privileged compute. Everyone else sees the listing without it, rather
+	// than a page they cannot use.
+	mayRegister := ctx.Doer != nil && ctx.Doer.IsAdmin
+	if !mayRegister && opts.OwnerID != 0 {
+		mayRegister, err = organization_model.HasPrivilegedCompute(ctx, opts.OwnerID)
 		if err != nil {
-			ctx.ServerError("CreateRunnerToken", err)
+			ctx.ServerError("HasPrivilegedCompute", err)
 			return
 		}
-	} else if err != nil {
-		ctx.ServerError("GetLatestRunnerToken", err)
-		return
 	}
+
+	// ownid=0,repo_id=0,means this token is used for global
+	if mayRegister {
+		var token *actions_model.ActionRunnerToken
+		token, err = actions_model.GetLatestRunnerToken(ctx, opts.OwnerID, opts.RepoID)
+		if errors.Is(err, util.ErrNotExist) || (token != nil && !token.IsActive) {
+			token, err = actions_model.NewRunnerToken(ctx, opts.OwnerID, opts.RepoID)
+			if err != nil {
+				ctx.ServerError("CreateRunnerToken", err)
+				return
+			}
+		} else if err != nil {
+			ctx.ServerError("GetLatestRunnerToken", err)
+			return
+		}
+		ctx.Data["RegistrationToken"] = token.Token
+	}
+	ctx.Data["MayRegisterRunner"] = mayRegister
 
 	ctx.Data["Keyword"] = opts.Filter
 	ctx.Data["Runners"] = runners
 	ctx.Data["Total"] = count
-	ctx.Data["RegistrationToken"] = token.Token
 	ctx.Data["RunnerOwnerID"] = opts.OwnerID
 	ctx.Data["RunnerRepoID"] = opts.RepoID
 	ctx.Data["SortType"] = opts.Sort
 	ctx.Data["AllowBulkActions"] = rCtx.IsAdmin
 
-	pager := context.NewPagination(count, opts.PageSize, opts.Page, 5)
-	pager.AddParamFromQuery(ctx.Req.URL.Query())
+	pager := context.NewPagerBuilder(ctx).TotalCount(count).PerPageLimit(opts.PageSize).CurPage(opts.Page).Build()
 
 	ctx.Data["Page"] = pager
 
@@ -223,7 +240,7 @@ func RunnersEdit(ctx *context.Context) {
 	}
 
 	ctx.Data["Tasks"] = tasks
-	pager := context.NewPagination(count, opts.PageSize, opts.Page, 5)
+	pager := context.NewPagerBuilder(ctx).TotalCount(count).PerPageLimit(opts.PageSize).CurPage(opts.Page).Build()
 	ctx.Data["Page"] = pager
 
 	ctx.HTML(http.StatusOK, rCtx.RunnerEditTemplate)
@@ -252,7 +269,7 @@ func RunnersEditPost(ctx *context.Context) {
 		return
 	}
 
-	form := web.GetForm(ctx).(*forms.EditRunnerForm)
+	form := web.GetForm[*forms.EditRunnerForm](ctx)
 	runner.Description = form.Description
 
 	err = actions_model.UpdateRunner(ctx, runner, "description")
@@ -269,6 +286,8 @@ func RunnersEditPost(ctx *context.Context) {
 	ctx.Redirect(redirectTo)
 }
 
+// ResetRunnerRegistrationToken mints a fresh token, so it needs the same
+// permission the page needed to show one at all.
 func ResetRunnerRegistrationToken(ctx *context.Context) {
 	rCtx, err := getRunnersCtx(ctx)
 	if err != nil {
@@ -279,6 +298,20 @@ func ResetRunnerRegistrationToken(ctx *context.Context) {
 	ownerID := rCtx.OwnerID
 	repoID := rCtx.RepoID
 	redirectTo := rCtx.RedirectLink
+
+	mayRegister := ctx.Doer != nil && ctx.Doer.IsAdmin
+	if !mayRegister && ownerID != 0 {
+		mayRegister, err = organization_model.HasPrivilegedCompute(ctx, ownerID)
+		if err != nil {
+			ctx.ServerError("HasPrivilegedCompute", err)
+			return
+		}
+	}
+	if !mayRegister {
+		ctx.Flash.Error(ctx.Tr("actions.runners.registration_not_permitted"))
+		ctx.JSONRedirect(redirectTo)
+		return
+	}
 
 	if _, err := actions_model.NewRunnerToken(ctx, ownerID, repoID); err != nil {
 		ctx.ServerError("ResetRunnerRegistrationToken", err)

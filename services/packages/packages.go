@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"net/http"
 	"net/url"
@@ -37,6 +38,7 @@ type Specialization interface {
 	OnBeforeRemovePackageAll(ctx context.Context, doer *user_model.User, pkg *packages_model.Package, pds []*packages_model.PackageDescriptor) error
 	OnBeforeRemovePackageVersion(ctx context.Context, doer *user_model.User, pd *packages_model.PackageDescriptor) error
 	GetViewPackageVersionData(ctx context.Context, pd *packages_model.PackageDescriptor) (any, error)
+	RenderSetupManual(ctx context.Context, pkg *packages_model.PackageDescriptor, viewData any) template.HTML
 }
 
 // PackageInfo describes a package
@@ -306,12 +308,11 @@ func addFileToPackageVersion(ctx context.Context, pv *packages_model.PackageVers
 	return addFileToPackageVersionUnchecked(ctx, pv, pfci)
 }
 
-func addFileToPackageVersionUnchecked(ctx context.Context, pv *packages_model.PackageVersion, pfci *PackageFileCreationInfo) (*packages_model.PackageFile, *packages_model.PackageBlob, bool, error) {
+func addFileToPackageVersionUnchecked(ctx context.Context, pv *packages_model.PackageVersion, pfci *PackageFileCreationInfo) (_ *packages_model.PackageFile, _ *packages_model.PackageBlob, created bool, _ error) {
 	log.Trace("Adding package file: %v, %s", pv.ID, pfci.Filename)
 
 	pb, exists, err := GetOrSavePackageBlob(ctx, packages_module.NewContentStore(), NewPackageBlob(pfci.Data), pfci.Data)
 	if err != nil {
-		log.Error("Error inserting package blob: %v", err)
 		return nil, nil, false, err
 	}
 

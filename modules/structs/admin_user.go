@@ -18,7 +18,6 @@ type CreateUserOption struct {
 	// The full display name of the user
 	FullName string `json:"full_name" binding:"MaxSize(100)"`
 	// required: true
-	// swagger:strfmt email
 	Email string `json:"email" binding:"Required;Email;MaxSize(254)"`
 	// The plain text password for the user
 	Password string `json:"password" binding:"MaxSize(255)"`
@@ -29,7 +28,7 @@ type CreateUserOption struct {
 	// Whether the user has restricted access privileges
 	Restricted *bool `json:"restricted"`
 	// User visibility level: public, limited, or private
-	Visibility UserVisibility `json:"visibility" binding:"In(,public,limited,private)"`
+	Visibility VisibilityString `json:"visibility" binding:"In(,public,limited,private)"`
 
 	// For explicitly setting the user creation timestamp. Useful when users are
 	// migrated from other systems. When omitted, the user's creation timestamp
@@ -76,5 +75,7 @@ type EditUserOption struct {
 	// Whether the user has restricted access privileges
 	Restricted *bool `json:"restricted"`
 	// User visibility level: public, limited, or private
-	Visibility UserVisibility `json:"visibility" binding:"In(,public,limited,private)"`
+	Visibility VisibilityString `json:"visibility" binding:"In(,public,limited,private)"`
+	// The user type
+	Type UserTypeString `json:"type" binding:"In(User,Organization,Bot)"`
 }

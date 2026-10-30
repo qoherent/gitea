@@ -6,6 +6,7 @@ package integration
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -19,6 +20,7 @@ import (
 	"gitea.dev/models/unittest"
 	user_model "gitea.dev/models/user"
 	api "gitea.dev/modules/structs"
+	"gitea.dev/modules/test"
 	repo_service "gitea.dev/services/repository"
 	"gitea.dev/tests"
 
@@ -175,12 +177,9 @@ func TestWebDeleteIssueDependencyCrossRepoPermission(t *testing.T) {
 		"removeDependencyID": strconv.FormatInt(dependencyIssue.ID, 10),
 		"dependencyType":     "blockedBy",
 	})
-	session.MakeRequest(t, req, http.StatusSeeOther)
-
-	unittest.AssertExistsAndLoadBean(t, &issues_model.IssueDependency{
-		IssueID:      targetIssue.ID,
-		DependencyID: dependencyIssue.ID,
-	})
+	resp := session.MakeRequest(t, req, http.StatusBadRequest)
+	assert.Equal(t, "Permission denied.", test.ParseJSONError(resp.Body.Bytes()).ErrorMessage)
+	unittest.AssertExistsAndLoadBean(t, &issues_model.IssueDependency{IssueID: targetIssue.ID, DependencyID: dependencyIssue.ID})
 
 	assert.NoError(t, repo_service.AddOrUpdateCollaborator(t.Context(), dependencyRepo, user40, perm.AccessModeRead))
 
@@ -188,10 +187,35 @@ func TestWebDeleteIssueDependencyCrossRepoPermission(t *testing.T) {
 		"removeDependencyID": strconv.FormatInt(dependencyIssue.ID, 10),
 		"dependencyType":     "blockedBy",
 	})
-	session.MakeRequest(t, req, http.StatusSeeOther)
+	session.MakeRequest(t, req, http.StatusOK)
+	unittest.AssertNotExistsBean(t, &issues_model.IssueDependency{IssueID: targetIssue.ID, DependencyID: dependencyIssue.ID})
+}
 
-	unittest.AssertNotExistsBean(t, &issues_model.IssueDependency{
-		IssueID:      targetIssue.ID,
-		DependencyID: dependencyIssue.ID,
-	})
+func TestIssueTimelineDependencyCrossRepoPermission(t *testing.T) {
+	defer tests.PrepareTestEnv(t)()
+
+	targetIssue := unittest.AssertExistsAndLoadBean(t, &issues_model.Issue{RepoID: 1, Index: 1})
+	dependencyRepo := unittest.AssertExistsAndLoadBean(t, &repo_model.Repository{ID: 3})
+	assert.True(t, dependencyRepo.IsPrivate)
+	dependencyIssue := unittest.AssertExistsAndLoadBean(t, &issues_model.Issue{RepoID: dependencyRepo.ID, Index: 1})
+	enableRepoDependencies(t, targetIssue.RepoID)
+	enableRepoDependencies(t, dependencyRepo.ID)
+	user1 := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 1})
+	assert.NoError(t, issues_model.CreateIssueDependency(t.Context(), user1, targetIssue, dependencyIssue))
+
+	session := loginUser(t, "user40")
+	token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeReadIssue)
+	assertDependencyVisible := func(visible bool) {
+		t.Helper()
+		req := NewRequest(t, "GET", "/api/v1/repos/user2/repo1/issues/1/timeline").AddTokenAuth(token)
+		comments := DecodeJSON(t, MakeRequest(t, req, http.StatusOK), []*api.TimelineComment{})
+		assert.Equal(t, visible, slices.ContainsFunc(comments, func(c *api.TimelineComment) bool { return c.Type == "add_dependency" }))
+		resp := session.MakeRequest(t, NewRequest(t, "GET", "/user2/repo1/issues/1"), http.StatusOK)
+		assert.Equal(t, visible, NewHTMLParser(t, resp.Body).Find(`.timeline-item a[href$="/org3/repo3/issues/1"]`).Length() > 0)
+	}
+
+	assertDependencyVisible(false)
+	user40 := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 40})
+	assert.NoError(t, repo_service.AddOrUpdateCollaborator(t.Context(), dependencyRepo, user40, perm.AccessModeRead))
+	assertDependencyVisible(true)
 }

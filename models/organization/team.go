@@ -74,19 +74,29 @@ const OwnerTeamName = "Owners"
 
 // Team represents a organization team.
 type Team struct {
-	ID                      int64 `xorm:"pk autoincr"`
-	OrgID                   int64 `xorm:"INDEX"`
-	LowerName               string
-	Name                    string
-	Description             string
-	AccessMode              perm.AccessMode    `xorm:"'authorize'"`
-	Members                 []*user_model.User `xorm:"-"`
-	NumRepos                int
-	NumMembers              int
-	Units                   []*TeamUnit         `xorm:"-"`
-	IncludesAllRepositories bool                `xorm:"NOT NULL DEFAULT false"`
-	CanCreateOrgRepo        bool                `xorm:"NOT NULL DEFAULT false"`
-	Visibility              structs.VisibleType `xorm:"NOT NULL DEFAULT 2"`
+	ID          int64 `xorm:"pk autoincr"`
+	OrgID       int64 `xorm:"INDEX"`
+	LowerName   string
+	Name        string
+	Description string
+	AccessMode  perm.AccessMode    `xorm:"'authorize'"`
+	Members     []*user_model.User `xorm:"-"`
+	NumRepos    int
+	NumMembers  int
+	Units       []*TeamUnit `xorm:"-"`
+
+	// All repos in the org are included in this team automatically
+	IncludesAllRepositories bool `xorm:"NOT NULL DEFAULT false"`
+
+	// Any user with CanCreateOrgRepo permission can create a repository in the organization, regardless of team membership.
+	// And the user will become the repo's admin (via collaborator) after the creation.
+	CanCreateOrgRepo bool `xorm:"NOT NULL DEFAULT false"`
+
+	Visibility structs.VisibleType `xorm:"NOT NULL DEFAULT 2"`
+
+	// Whether this team's members may reach runners the instance has
+	// marked privileged. A site-admin grant; see PrivilegedCompute.
+	OrgPrivilegedCompute bool `xorm:"NOT NULL DEFAULT false"`
 }
 
 func (t *Team) IsPublic() bool  { return t.Visibility.IsPublic() }
@@ -117,8 +127,8 @@ func (t *Team) CanNonMemberReadMeta(ctx context.Context, org, doer *user_model.U
 	}
 }
 
-func NormalizeTeamVisibility(s string) structs.VisibleType {
-	if vt, ok := structs.VisibilityModes[s]; ok {
+func NormalizeTeamVisibility[T ~string](v T) structs.VisibleType {
+	if vt, ok := structs.VisibilityModes[structs.VisibilityString(v)]; ok {
 		return vt
 	}
 	return structs.VisibleTypePrivate
@@ -149,29 +159,14 @@ func (t *Team) LoadUnits(ctx context.Context) (err error) {
 	return err
 }
 
-// GetUnitNames returns the team units names
-func (t *Team) GetUnitNames() (res []string) {
-	if t.HasAdminAccess() {
-		return unit.AllUnitKeyNames()
-	}
-
-	for _, u := range t.Units {
-		res = append(res, unit.Units[u.Type].NameKey)
-	}
-	return res
-}
-
 // GetUnitsMap returns the team units permissions
 func (t *Team) GetUnitsMap() map[string]string {
+	if len(t.Units) == 0 {
+		return nil
+	}
 	m := make(map[string]string)
-	if t.HasAdminAccess() {
-		for _, u := range unit.Units {
-			m[u.NameKey] = t.AccessMode.ToString()
-		}
-	} else {
-		for _, u := range t.Units {
-			m[u.Unit().NameKey] = u.AccessMode.ToString()
-		}
+	for _, u := range t.Units {
+		m[u.Unit().NameKey] = u.AccessMode.ToString()
 	}
 	return m
 }
@@ -189,10 +184,6 @@ func (t *Team) IsMember(ctx context.Context, userID int64) bool {
 		return false
 	}
 	return isMember
-}
-
-func (t *Team) HasAdminAccess() bool {
-	return t.AccessMode >= perm.AccessModeAdmin
 }
 
 // LoadMembers returns paginated members in team of organization.
@@ -214,16 +205,21 @@ func (t *Team) UnitAccessMode(ctx context.Context, tp unit.Type) perm.AccessMode
 	return accessMode
 }
 
-func (t *Team) UnitAccessModeEx(ctx context.Context, tp unit.Type) (accessMode perm.AccessMode, exist bool) {
+func (t *Team) UnitAccessModeEx(ctx context.Context, tp unit.Type) (mode perm.AccessMode, exist bool) {
 	if err := t.LoadUnits(ctx); err != nil {
-		log.Warn("Error loading team (ID: %d) units: %s", t.ID, err.Error())
+		log.Error("Error loading team (ID: %d) units: %v", t.ID, err)
 	}
 	for _, u := range t.Units {
 		if u.Type == tp {
-			return u.AccessMode, true
+			mode, exist = u.AccessMode, true
+			break
 		}
 	}
-	return perm.AccessModeNone, false
+	mode = max(mode, t.AccessMode)
+	if unitDef, ok := unit.Units[tp]; ok {
+		mode = min(mode, unitDef.MaxPerm())
+	}
+	return mode, exist || t.AccessMode > perm.AccessModeNone
 }
 
 // IsUsableTeamName tests if a name could be as team name
@@ -295,4 +291,35 @@ func GetPossibleTeamByID(ctx context.Context, teamID int64) (int64, *Team, error
 func IncrTeamRepoNum(ctx context.Context, teamID int64) error {
 	_, err := db.GetEngine(ctx).Incr("num_repos").ID(teamID).Update(new(Team))
 	return err
+}
+
+// HasPrivilegedCompute reports whether any team in this organization carries
+// the privileged-compute grant.
+//
+// Which is what makes an organization a privileged one. The grant is set by a
+// site admin and by nobody else, so "an organization the instance has given
+// privileged compute to" needs no column of its own -- it is the same fact,
+// asked of the organization rather than of a person.
+//
+// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute::TeamGrant interface
+func HasPrivilegedCompute(ctx context.Context, orgID int64) (bool, error) {
+	return db.GetEngine(ctx).
+		Where(builder.Eq{"org_id": orgID, "org_privileged_compute": true}).
+		Exist(new(Team))
+}
+
+// OrgPrivilegedCompute reports whether the user may have runs dispatched to
+// runners marked PrivilegedCompute in this organization.
+//
+// The grant comes from membership of any team in the org carrying the flag, so
+// it is revoked by leaving that team rather than by leaving the organization.
+//
+// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute::TeamGrant interface
+func OrgPrivilegedCompute(ctx context.Context, orgID, uid int64) (bool, error) {
+	return db.GetEngine(ctx).
+		Where(builder.Eq{"team.org_privileged_compute": true}).
+		Join("INNER", "team_user", "team_user.team_id = team.id").
+		And("team_user.uid = ?", uid).
+		And("team_user.org_id = ?", orgID).
+		Exist(new(Team))
 }

@@ -131,14 +131,14 @@ func testAPIOrgGeneral(t *testing.T) {
 		apiOrgList := DecodeJSON(t, resp, []*api.Organization{})
 		assert.Len(t, apiOrgList, 13)
 		assert.Equal(t, "Limited Org 36", apiOrgList[1].FullName)
-		assert.Equal(t, api.UserVisibilityLimited, apiOrgList[1].Visibility)
+		assert.Equal(t, api.VisibilityStringLimited, apiOrgList[1].Visibility)
 
 		publicOnlyToken := getTokenForLoggedInUser(t, user1Session, auth_model.AccessTokenScopeReadOrganization, auth_model.AccessTokenScopePublicOnly)
 		resp = MakeRequest(t, NewRequest(t, "GET", "/api/v1/orgs").AddTokenAuth(publicOnlyToken), http.StatusOK)
 		apiOrgList = DecodeJSON(t, resp, []*api.Organization{})
 		assert.Len(t, apiOrgList, 9)
 		for _, org := range apiOrgList {
-			assert.Equal(t, api.UserVisibilityPublic, org.Visibility)
+			assert.Equal(t, api.VisibilityStringPublic, org.Visibility)
 		}
 
 		// accessing without a token will return only public orgs
@@ -148,7 +148,7 @@ func testAPIOrgGeneral(t *testing.T) {
 		apiOrgList = DecodeJSON(t, resp, []*api.Organization{})
 		assert.Len(t, apiOrgList, 9)
 		assert.Equal(t, "org 17", apiOrgList[0].FullName)
-		assert.Equal(t, api.UserVisibilityPublic, apiOrgList[0].Visibility)
+		assert.Equal(t, api.VisibilityStringPublic, apiOrgList[0].Visibility)
 	})
 
 	t.Run("OrgEdit", func(t *testing.T) {
@@ -160,7 +160,7 @@ func testAPIOrgGeneral(t *testing.T) {
 			Description: new("new description"),
 			Website:     new("https://org3-new-website.example.com"),
 			Location:    new("new location"),
-			Visibility:  new(api.UserVisibilityLimited),
+			Visibility:  new(api.VisibilityStringLimited),
 			Email:       new("org3-new-email@example.com"),
 		}
 		req := NewRequestWithJSON(t, "PATCH", "/api/v1/orgs/org3", &org3Edit).AddTokenAuth(user1Token)
@@ -190,7 +190,7 @@ func testAPIOrgGeneral(t *testing.T) {
 
 	t.Run("OrgEditInvalidVisibility", func(t *testing.T) {
 		org := api.EditOrgOption{
-			Visibility: new(api.UserVisibility("invalid-visibility")),
+			Visibility: new(api.VisibilityString("invalid-visibility")),
 		}
 		req := NewRequestWithJSON(t, "PATCH", "/api/v1/orgs/org3", &org).AddTokenAuth(user1Token)
 		MakeRequest(t, req, http.StatusUnprocessableEntity)

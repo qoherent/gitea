@@ -8,7 +8,9 @@ import (
 
 	"gitea.dev/models/db"
 	"gitea.dev/models/organization"
+	"gitea.dev/models/perm"
 	repo_model "gitea.dev/models/repo"
+	"gitea.dev/models/unit"
 	"gitea.dev/models/unittest"
 	user_model "gitea.dev/models/user"
 	"gitea.dev/modules/structs"
@@ -290,4 +292,54 @@ func TestUsersInTeamsCount(t *testing.T) {
 func TestIsUsableTeamName(t *testing.T) {
 	assert.NoError(t, organization.IsUsableTeamName("usable"))
 	assert.True(t, db.IsErrNameReserved(organization.IsUsableTeamName("new")))
+}
+
+func TestTeam_UnitAccessModeEx(t *testing.T) {
+	team := &organization.Team{
+		AccessMode: perm.AccessModeWrite, Units: []*organization.TeamUnit{
+			{Type: unit.TypeIssues, AccessMode: perm.AccessModeRead}, // team mode wins
+			{Type: unit.TypeWiki, AccessMode: perm.AccessModeAdmin},  // unit mode wins
+		},
+	}
+	mode, exist := team.UnitAccessModeEx(t.Context(), unit.TypeActions)
+	assert.True(t, exist)
+	assert.Equal(t, perm.AccessModeWrite, mode)
+	assert.Equal(t, perm.AccessModeWrite, team.UnitAccessMode(t.Context(), unit.TypeIssues))
+	assert.Equal(t, perm.AccessModeAdmin, team.UnitAccessMode(t.Context(), unit.TypeWiki))
+	assert.Equal(t, perm.AccessModeRead, team.UnitAccessMode(t.Context(), unit.TypeExternalWiki)) // limited by unit definition
+
+	team = &organization.Team{AccessMode: perm.AccessModeOwner, Units: []*organization.TeamUnit{}}
+	mode, exist = team.UnitAccessModeEx(t.Context(), unit.TypePackages)
+	assert.True(t, exist)
+	assert.Equal(t, perm.AccessModeAdmin, mode)
+
+	team = &organization.Team{AccessMode: perm.AccessModeNone, Units: []*organization.TeamUnit{}}
+	mode, exist = team.UnitAccessModeEx(t.Context(), unit.TypeActions)
+	assert.False(t, exist)
+	assert.Equal(t, perm.AccessModeNone, mode)
+}
+
+// An organization is a privileged one when a site admin has granted any of its
+// teams privileged compute. That is what gates registering a runner of its
+// own, and it needs no column: the grant is already admin-only, so asking it
+// of the organization rather than of a person is the same fact.
+func TestHasPrivilegedCompute(t *testing.T) {
+	assert.NoError(t, unittest.PrepareTestDatabase())
+
+	held, err := organization.HasPrivilegedCompute(t.Context(), 3)
+	assert.NoError(t, err)
+	assert.False(t, held, "no fixture team carries the grant")
+
+	_, err = db.GetEngine(t.Context()).Table("team").Where("id = ?", 2).
+		Update(map[string]any{"org_privileged_compute": true})
+	assert.NoError(t, err)
+
+	held, err = organization.HasPrivilegedCompute(t.Context(), 3)
+	assert.NoError(t, err)
+	assert.True(t, held, "a granted team makes its organization a privileged one")
+
+	// And not its neighbours: organization 6 has teams of its own.
+	held, err = organization.HasPrivilegedCompute(t.Context(), 6)
+	assert.NoError(t, err)
+	assert.False(t, held, "the grant does not cross organizations")
 }

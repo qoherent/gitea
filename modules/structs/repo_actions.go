@@ -111,6 +111,11 @@ type ActionWorkflowRun struct {
 	// It is set only when the current attempt is > 1 (i.e. a rerun). For the first attempt, or for legacy runs that pre-date ActionRunAttempt, it is null.
 	PreviousAttemptURL *string `json:"previous_attempt_url"`
 	HTMLURL            string  `json:"html_url"`
+	JobsURL            string  `json:"jobs_url"`
+	LogsURL            string  `json:"logs_url"`
+	ArtifactsURL       string  `json:"artifacts_url"`
+	CancelURL          string  `json:"cancel_url"`
+	RerunURL           string  `json:"rerun_url"`
 	DisplayTitle       string  `json:"display_title"`
 	Path               string  `json:"path"`
 	Event              string  `json:"event"`
@@ -129,6 +134,10 @@ type ActionWorkflowRun struct {
 	HeadRepository *Repository           `json:"head_repository,omitempty"`
 	Conclusion     string                `json:"conclusion,omitempty"`
 	PullRequests   []*PullRequestMinimal `json:"pull_requests"`
+	// swagger:strfmt date-time
+	CreatedAt time.Time `json:"created_at"`
+	// swagger:strfmt date-time
+	UpdatedAt time.Time `json:"updated_at"`
 	// swagger:strfmt date-time
 	StartedAt time.Time `json:"started_at"`
 	// swagger:strfmt date-time
@@ -230,6 +239,11 @@ type ActionRunner struct {
 	Disabled  bool                 `json:"disabled"`
 	Ephemeral bool                 `json:"ephemeral"`
 	Labels    []*ActionRunnerLabel `json:"labels"`
+	// PrivilegedCompute marks a runner whose jobs may only come from a team
+	// holding the organization's privileged-compute grant. Reported so that a
+	// surface listing an organization's runners can say which of them are
+	// reachable by its members, which the labels alone never show.
+	PrivilegedCompute bool `json:"privileged_compute"`
 }
 
 // EditActionRunnerOption represents the editable fields for a runner.
@@ -237,6 +251,12 @@ type ActionRunner struct {
 type EditActionRunnerOption struct {
 	// required: true
 	Disabled *bool `json:"disabled"`
+	// Whether this runner is reserved for an organization's privileged-compute
+	// teams. A site-admin decision and only for an organization-owned runner,
+	// as on the web form: the grant that gates it is per-organization, so a
+	// global or repository-scoped runner marked privileged is one no job can
+	// ever be dispatched to. Left unchanged when omitted.
+	PrivilegedCompute *bool `json:"privileged_compute"`
 }
 
 // ActionRunnersResponse returns Runners

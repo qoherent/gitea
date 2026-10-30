@@ -9,11 +9,11 @@ import (
 	"strings"
 
 	git_model "gitea.dev/models/git"
+	"gitea.dev/models/perm/access"
 	repo_model "gitea.dev/models/repo"
 	user_model "gitea.dev/models/user"
 	"gitea.dev/modules/git"
 	"gitea.dev/modules/git/gitcmd"
-	"gitea.dev/modules/gitrepo"
 	"gitea.dev/modules/reqctx"
 	"gitea.dev/modules/structs"
 	"gitea.dev/modules/util"
@@ -89,7 +89,11 @@ func (opts *ApplyDiffPatchOptions) Validate(ctx context.Context, repo *repo_mode
 		}
 		if protectedBranch != nil {
 			protectedBranch.Repo = repo
-			if !protectedBranch.CanUserPush(ctx, doer) {
+			perm, err := access.GetDoerRepoPermission(ctx, repo, doer)
+			if err != nil {
+				return err
+			}
+			if !protectedBranch.CanUserPush(ctx, doer, perm) {
 				return ErrUserCannotCommit{
 					UserName: doer.LowerName,
 				}
@@ -138,7 +142,7 @@ func gitPatchPrepare(ctx context.Context, repo *repo_model.Repository, gitRepo *
 	}
 
 	// Get the commit of the original branch
-	commit, err := t.GetBranchCommit(opts.OldBranch)
+	commit, err := t.GetBranchCommit(ctx, opts.OldBranch)
 	if err != nil {
 		return nil, err // Couldn't get a commit for the branch
 	}
@@ -147,7 +151,7 @@ func gitPatchPrepare(ctx context.Context, repo *repo_model.Repository, gitRepo *
 	if opts.LastCommitID == "" {
 		opts.LastCommitID = commit.ID.String()
 	} else {
-		lastCommitID, err := t.gitRepo.ConvertToGitID(opts.LastCommitID)
+		lastCommitID, err := t.gitRepo.ConvertToGitID(ctx, opts.LastCommitID)
 		if err != nil {
 			return nil, fmt.Errorf("invalid last commit ID: %w", err)
 		}
@@ -164,7 +168,7 @@ func gitPatchPrepare(ctx context.Context, repo *repo_model.Repository, gitRepo *
 
 // ApplyDiffPatch applies a patch to the given repository
 func ApplyDiffPatch(ctx reqctx.RequestContext, repo *repo_model.Repository, doer *user_model.User, opts *ApplyDiffPatchOptions) (*structs.FileResponse, error) {
-	gitRepo, err := gitrepo.RepositoryFromRequestContextOrOpen(ctx, repo)
+	gitRepo, err := git.RepositoryFromRequestContextOrOpen(ctx, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -179,16 +183,16 @@ func ApplyDiffPatch(ctx reqctx.RequestContext, repo *repo_model.Repository, doer
 		cmdApply.AddArguments("-3")
 	}
 
-	if err := cmdApply.WithDir(t.basePath).
+	if err := cmdApply.WithRepo(t.gitRepo).
 		WithStdinBytes([]byte(opts.Content)).
 		RunWithStderr(ctx); err != nil {
 		return nil, fmt.Errorf("git apply error: %w", err)
 	}
 
-	return gitPatchCommitPush(ctx, t, repo, doer, opts)
+	return gitPatchCommitPush(ctx, t, repo, gitRepo, doer, opts)
 }
 
-func gitPatchCommitPush(ctx context.Context, t *TemporaryUploadRepository, repo *repo_model.Repository, doer *user_model.User, opts *ApplyDiffPatchOptions) (*structs.FileResponse, error) {
+func gitPatchCommitPush(ctx context.Context, t *TemporaryUploadRepository, repo *repo_model.Repository, gitRepo *git.Repository, doer *user_model.User, opts *ApplyDiffPatchOptions) (*structs.FileResponse, error) {
 	treeHash, err := t.WriteTree(ctx)
 	if err != nil {
 		return nil, err
@@ -218,12 +222,12 @@ func gitPatchCommitPush(ctx context.Context, t *TemporaryUploadRepository, repo 
 		return nil, err
 	}
 
-	commit, err := t.GetCommit(commitHash)
+	commit, err := t.GetCommit(ctx, commitHash)
 	if err != nil {
 		return nil, err
 	}
 
-	fileCommitResponse, _ := GetFileCommitResponse(repo, commit) // ok if fails, then will be nil
+	fileCommitResponse, _ := GetFileCommitResponse(ctx, repo, gitRepo, commit) // ok if fails, then will be nil
 	verification := GetPayloadCommitVerification(ctx, commit)
 	fileResponse := &structs.FileResponse{
 		Commit:       fileCommitResponse,

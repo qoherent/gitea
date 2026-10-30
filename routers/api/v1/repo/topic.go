@@ -103,7 +103,7 @@ func UpdateTopics(ctx *context.APIContext) {
 	//   "423":
 	//     "$ref": "#/responses/repoArchivedError"
 
-	form := web.GetForm(ctx).(*api.RepoTopicOptions)
+	form := web.GetForm[*api.RepoTopicOptions](ctx)
 	topicNames := form.Topics
 	validTopics, invalidTopics := repo_model.SanitizeAndValidateTopics(topicNames)
 

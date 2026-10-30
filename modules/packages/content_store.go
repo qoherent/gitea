@@ -43,13 +43,6 @@ func (s *ContentStore) GetServeDirectURL(key BlobHash256Key, filename, method st
 	return s.store.ServeDirectURL(KeyToRelativePath(key), filename, method, reqParams)
 }
 
-// FIXME: Workaround to be removed in v1.20
-// https://github.com/go-gitea/gitea/issues/19586
-func (s *ContentStore) Has(key BlobHash256Key) error {
-	_, err := s.store.Stat(KeyToRelativePath(key))
-	return err
-}
-
 func (s *ContentStore) OptionalSize(key BlobHash256Key) (sz optional.Option[int64], _ error) {
 	st, err := s.store.Stat(KeyToRelativePath(key))
 	if errors.Is(err, fs.ErrNotExist) {

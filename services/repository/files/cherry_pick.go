@@ -11,7 +11,6 @@ import (
 	repo_model "gitea.dev/models/repo"
 	user_model "gitea.dev/models/user"
 	"gitea.dev/modules/git"
-	"gitea.dev/modules/gitrepo"
 	"gitea.dev/modules/reqctx"
 	"gitea.dev/modules/structs"
 	"gitea.dev/services/pull"
@@ -35,7 +34,7 @@ func (err ErrCommitIDDoesNotMatch) Error() string {
 
 // CherryPick cherry-picks or reverts a commit to the given repository
 func CherryPick(ctx reqctx.RequestContext, repo *repo_model.Repository, doer *user_model.User, revert bool, opts *ApplyDiffPatchOptions) (*structs.FileResponse, error) {
-	gitRepo, err := gitrepo.RepositoryFromRequestContextOrOpen(ctx, repo)
+	gitRepo, err := git.RepositoryFromRequestContextOrOpen(ctx, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +49,7 @@ func CherryPick(ctx reqctx.RequestContext, repo *repo_model.Repository, doer *us
 		return nil, err
 	}
 
-	commit, err := t.GetCommit(strings.TrimSpace(opts.Content))
+	commit, err := t.GetCommit(ctx, strings.TrimSpace(opts.Content))
 	if err != nil {
 		return nil, err
 	}
@@ -75,5 +74,5 @@ func CherryPick(ctx reqctx.RequestContext, repo *repo_model.Repository, doer *us
 		return nil, errors.New("failed to merge due to conflicts")
 	}
 
-	return gitPatchCommitPush(ctx, t, repo, doer, opts)
+	return gitPatchCommitPush(ctx, t, repo, gitRepo, doer, opts)
 }

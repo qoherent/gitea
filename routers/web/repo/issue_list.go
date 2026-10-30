@@ -14,14 +14,11 @@ import (
 	"strings"
 
 	"gitea.dev/models/db"
-	git_model "gitea.dev/models/git"
 	issues_model "gitea.dev/models/issues"
 	repo_model "gitea.dev/models/repo"
-	"gitea.dev/models/unit"
 	user_model "gitea.dev/models/user"
 	issue_indexer "gitea.dev/modules/indexer/issues"
 	db_indexer "gitea.dev/modules/indexer/issues/db"
-	"gitea.dev/modules/log"
 	"gitea.dev/modules/optional"
 	"gitea.dev/modules/setting"
 	"gitea.dev/modules/util"
@@ -334,8 +331,7 @@ func UpdateIssueStatus(ctx *context.Context) {
 
 	action := ctx.FormString("action")
 	if action != "open" && action != "close" {
-		log.Warn("Unrecognized action: %s", action)
-		ctx.JSONOK()
+		ctx.JSONError("invalid action: " + action)
 		return
 	}
 
@@ -355,9 +351,7 @@ func UpdateIssueStatus(ctx *context.Context) {
 		if action == "close" && !issue.IsClosed {
 			if err := issue_service.CloseIssue(ctx, issue, ctx.Doer, ""); err != nil {
 				if issues_model.IsErrDependenciesLeft(err) {
-					ctx.JSON(http.StatusPreconditionFailed, map[string]any{
-						"error": ctx.Tr("repo.issues.dependency.issue_batch_close_blocked", issue.Index),
-					})
+					ctx.JSONError(ctx.Tr("repo.issues.dependency.issue_batch_close_blocked", issue.Index))
 					return
 				}
 				ctx.ServerError("CloseIssue", err)
@@ -386,10 +380,11 @@ func prepareIssueFilterExclusiveOrderScopes(ctx *context.Context, allLabels []*i
 	ctx.Data["ExclusiveLabelScopes"] = scopes
 }
 
-func renderMilestones(ctx *context.Context) {
+func renderMilestones(ctx *context.Context, projectID int64) {
 	// Get milestones
 	milestones, err := db.Find[issues_model.Milestone](ctx, issues_model.FindMilestoneOptions{
-		RepoID: ctx.Repo.Repository.ID,
+		RepoID:    ctx.Repo.Repository.ID,
+		ProjectID: projectID,
 	})
 	if err != nil {
 		ctx.ServerError("GetAllRepoMilestones", err)
@@ -515,7 +510,7 @@ func prepareIssueFilterAndList(ctx *context.Context, milestoneID int64, projectI
 		total = util.Iif(isShowClosed.Value(), issueStats.ClosedCount, issueStats.OpenCount)
 	}
 	page := max(ctx.FormInt("page"), 1)
-	pager := context.NewPagination(total, setting.UI.IssuePagingNum, page, 5)
+	pager := context.NewPagerBuilder(ctx).TotalCount(total).PerPageLimit(setting.UI.IssuePagingNum).CurPage(page).Build()
 
 	// prepare real issue list:
 	var issues issues_model.IssueList
@@ -525,7 +520,7 @@ func prepareIssueFilterAndList(ctx *context.Context, milestoneID int64, projectI
 		// In either case, no need to use keyword anymore
 		searchResult, err := db_indexer.GetIndexer().FindWithIssueOptions(ctx, &issues_model.IssuesOptions{
 			Paginator: &db.ListOptions{
-				Page:     pager.Paginater.Current(),
+				Page:     pager.Paginator.Current(),
 				PageSize: setting.UI.IssuePagingNum,
 			},
 			RepoIDs:           []int64{repo.ID},
@@ -571,15 +566,10 @@ func prepareIssueFilterAndList(ctx *context.Context, milestoneID int64, projectI
 		}
 	}
 
-	commitStatuses, lastStatus, err := pull_service.GetIssuesAllCommitStatus(ctx, issues)
+	commitStatuses, lastStatus, err := pull_service.GetIssuesAllCommitStatus(ctx, ctx.Doer, issues)
 	if err != nil {
 		ctx.ServerError("GetIssuesAllCommitStatus", err)
 		return
-	}
-	if !ctx.Repo.Permission.CanRead(unit.TypeActions) {
-		for key := range commitStatuses {
-			git_model.CommitStatusesHideActionsURL(ctx, commitStatuses[key])
-		}
 	}
 
 	if err := issues.LoadAttributes(ctx); err != nil {
@@ -635,7 +625,7 @@ func prepareIssueFilterAndList(ctx *context.Context, milestoneID int64, projectI
 	showArchivedLabels := ctx.FormBool("archived_labels")
 	ctx.Data["ShowArchivedLabels"] = showArchivedLabels
 	ctx.Data["PinnedIssues"] = pinned
-	ctx.Data["IsRepoAdmin"] = ctx.IsSigned && (ctx.Repo.Permission.IsAdmin() || ctx.Doer.IsAdmin)
+	ctx.Data["IsRepoAdmin"] = ctx.Repo.Permission.IsAdmin()
 	ctx.Data["IssueStats"] = issueStats
 	ctx.Data["OpenCount"] = issueStats.OpenCount
 	ctx.Data["ClosedCount"] = issueStats.ClosedCount
@@ -656,7 +646,6 @@ func prepareIssueFilterAndList(ctx *context.Context, milestoneID int64, projectI
 	default:
 		ctx.Data["State"] = "open"
 	}
-	pager.AddParamFromRequest(ctx.Req)
 	ctx.Data["Page"] = pager
 }
 
@@ -681,7 +670,7 @@ func Issues(ctx *context.Context) {
 		}
 		ctx.Data["Title"] = ctx.Tr("repo.issues")
 		ctx.Data["PageIsIssueList"] = true
-		ctx.Data["NewIssueChooseTemplate"] = issue_service.HasTemplatesOrContactLinks(ctx.Repo.Repository, ctx.Repo.GitRepo)
+		ctx.Data["NewIssueChooseTemplate"] = issue_service.HasTemplatesOrContactLinks(ctx, ctx.Repo.Repository, ctx.Repo.GitRepo)
 	}
 
 	projectIDs := parseProjectIDsFromQuery(ctx)
@@ -691,7 +680,7 @@ func Issues(ctx *context.Context) {
 		return
 	}
 
-	renderMilestones(ctx)
+	renderMilestones(ctx, 0)
 	if ctx.Written() {
 		return
 	}

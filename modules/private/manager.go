@@ -38,14 +38,14 @@ func ReloadTemplates(ctx context.Context) ResponseExtra {
 
 // FlushOptions represents the options for the flush call
 type FlushOptions struct {
-	Timeout     time.Duration
+	Timeout     int64
 	NonBlocking bool
 }
 
 // FlushQueues calls the internal flush-queues function
 func FlushQueues(ctx context.Context, timeout time.Duration, nonBlocking bool) ResponseExtra {
 	reqURL := setting.LocalURL + "api/internal/manager/flush-queues"
-	req := newInternalRequestAPI(ctx, reqURL, "POST", FlushOptions{Timeout: timeout, NonBlocking: nonBlocking})
+	req := newInternalRequestAPI(ctx, reqURL, "POST", FlushOptions{Timeout: int64(timeout), NonBlocking: nonBlocking})
 	if timeout > 0 {
 		req.SetReadWriteTimeout(timeout + 10*time.Second)
 	}
@@ -78,14 +78,6 @@ func SetLogSQL(ctx context.Context, on bool) ResponseExtra {
 	reqURL := setting.LocalURL + "api/internal/manager/set-log-sql?on=" + strconv.FormatBool(on)
 	req := newInternalRequestAPI(ctx, reqURL, "POST")
 	return requestJSONClientMsg(req, "Log SQL setting set")
-}
-
-// LoggerOptions represents the options for the add logger call
-type LoggerOptions struct {
-	Logger string
-	Writer string
-	Mode   string
-	Config map[string]any
 }
 
 // Processes return the current processes from this gitea instance

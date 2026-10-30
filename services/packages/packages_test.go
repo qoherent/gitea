@@ -11,7 +11,11 @@ import (
 	"net/http"
 	"testing"
 
+	"gitea.dev/models/db"
+	"gitea.dev/models/organization"
 	packages_model "gitea.dev/models/packages"
+	repo_model "gitea.dev/models/repo"
+	unit_model "gitea.dev/models/unit"
 	"gitea.dev/models/unittest"
 	user_model "gitea.dev/models/user"
 	packages_module "gitea.dev/modules/packages"
@@ -34,22 +38,18 @@ func TestCreatePackageAndAddFileRestoresMissingBlobFile(t *testing.T) {
 		require.NoError(t, err)
 		_, pf, err := CreatePackageAndAddFile(t.Context(),
 			&PackageCreationInfo{
-				PackageInfo: PackageInfo{
-					Owner:       user,
-					PackageType: packages_model.TypeNuGet,
-					Name:        name,
-					Version:     "1.0.0",
-				},
+				Owner:            user,
+				PackageType:      packages_model.TypeNuGet,
+				Name:             name,
+				Version:          "1.0.0",
 				SemverCompatible: true,
 				Creator:          user,
 			},
 			&PackageFileCreationInfo{
-				PackageFileInfo: PackageFileInfo{
-					Filename: filename,
-				},
-				Creator: user,
-				Data:    buf,
-				IsLead:  true,
+				Filename: filename,
+				Creator:  user,
+				Data:     buf,
+				IsLead:   true,
 			})
 		return pf, err
 	}
@@ -93,4 +93,25 @@ func TestCreatePackageAndAddFileRestoresMissingBlobFile(t *testing.T) {
 		assert.NoError(t, s.Close())
 		assert.Equal(t, pkgData, respData)
 	}
+}
+
+func TestUnlinkFromRepositoryRequiresTargetRepoAdmin(t *testing.T) {
+	assert.NoError(t, unittest.PrepareTestDatabase())
+	repo := &repo_model.Repository{OwnerID: 3, OwnerName: "org3", Name: "package-repo", LowerName: "package-repo", IsPrivate: true}
+	require.NoError(t, db.Insert(t.Context(), repo))
+	require.NoError(t, db.Insert(t.Context(),
+		&repo_model.RepoUnit{RepoID: repo.ID, Type: unit_model.TypeCode},
+		&repo_model.RepoUnit{RepoID: repo.ID, Type: unit_model.TypePackages},
+		&organization.TeamRepo{OrgID: repo.OwnerID, TeamID: 14, RepoID: repo.ID},
+	))
+	pkg := &packages_model.Package{OwnerID: repo.OwnerID, RepoID: repo.ID, Type: packages_model.TypeGeneric, Name: "package", LowerName: "package"}
+	require.NoError(t, db.Insert(t.Context(), pkg))
+	doer := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 28})
+
+	assert.Error(t, UnlinkFromRepository(t.Context(), pkg, doer))
+	assert.Equal(t, repo.ID, unittest.AssertExistsAndLoadBean(t, &packages_model.Package{ID: pkg.ID}).RepoID)
+
+	require.NoError(t, db.Insert(t.Context(), &organization.TeamRepo{OrgID: repo.OwnerID, TeamID: 12, RepoID: repo.ID}))
+	require.NoError(t, UnlinkFromRepository(t.Context(), pkg, doer))
+	assert.Zero(t, unittest.AssertExistsAndLoadBean(t, &packages_model.Package{ID: pkg.ID}).RepoID)
 }

@@ -4,8 +4,8 @@
 package private
 
 import (
-	"fmt"
 	"net/http"
+	"time"
 
 	"gitea.dev/models/db"
 	"gitea.dev/modules/graceful"
@@ -22,9 +22,7 @@ import (
 func ReloadTemplates(ctx *context.PrivateContext) {
 	err := templates.ReloadAllTemplates()
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, private.Response{
-			UserMsg: fmt.Sprintf("Template error: %v", err),
-		})
+		ctx.PrivateInternalErrorf("Template error: %v", err)
 		return
 	}
 	ctx.PlainText(http.StatusOK, "success")
@@ -32,12 +30,12 @@ func ReloadTemplates(ctx *context.PrivateContext) {
 
 // FlushQueues flushes all the Queues
 func FlushQueues(ctx *context.PrivateContext) {
-	opts := web.GetForm(ctx).(*private.FlushOptions)
+	opts := web.GetForm[*private.FlushOptions](ctx)
 	if opts.NonBlocking {
 		// Save the hammer ctx here - as a new one is created each time you call this.
 		baseCtx := graceful.GetManager().HammerContext()
 		go func() {
-			err := queue.GetManager().FlushAll(baseCtx, opts.Timeout)
+			err := queue.GetManager().FlushAll(baseCtx, time.Duration(opts.Timeout))
 			if err != nil {
 				log.Error("Flushing request timed-out with error: %v", err)
 			}
@@ -47,11 +45,10 @@ func FlushQueues(ctx *context.PrivateContext) {
 		})
 		return
 	}
-	err := queue.GetManager().FlushAll(ctx, opts.Timeout)
+	err := queue.GetManager().FlushAll(ctx, time.Duration(opts.Timeout))
 	if err != nil {
-		ctx.JSON(http.StatusRequestTimeout, private.Response{
-			UserMsg: fmt.Sprintf("%v", err),
-		})
+		ctx.PrivateUserErrorf(http.StatusRequestTimeout, "%v", err)
+		return
 	}
 	ctx.PlainText(http.StatusOK, "success")
 }
@@ -71,9 +68,7 @@ func ResumeLogging(ctx *context.PrivateContext) {
 // ReleaseReopenLogging releases and reopens logging files
 func ReleaseReopenLogging(ctx *context.PrivateContext) {
 	if err := releasereopen.GetManager().ReleaseReopen(); err != nil {
-		ctx.JSON(http.StatusInternalServerError, private.Response{
-			Err: fmt.Sprintf("Error during release and reopen: %v", err),
-		})
+		ctx.PrivateInternalErrorf("Error during release and reopen: %v", err)
 		return
 	}
 	ctx.PlainText(http.StatusOK, "success")

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import {computed, onMounted, onUnmounted, ref, shallowRef, watch} from 'vue';
-import {SvgIcon} from '../svg.ts';
+import SvgIcon from './SvgIcon.vue';
 import ActionStatusIcon from './ActionStatusIcon.vue';
 import {localUserSettings} from '../modules/user-settings.ts';
 import {isPlainClick} from '../utils/dom.ts';
-import {trN} from '../modules/i18n.ts';
-import {debounce} from 'throttle-debounce';
+import {trN, trString} from '../modules/i18n.ts';
+import {debounce} from '../utils/func.ts';
 import type {ActionsJob} from '../modules/gitea-actions.ts';
 import type {ActionRunViewStore} from './ActionRunView.ts';
 import {
@@ -17,6 +17,18 @@ import {
   type GraphNode,
   type RoutedEdge,
 } from './WorkflowGraph.utils.ts';
+
+export type WorkflowGraphLocale = {
+  graphJobsCount1: string,
+  graphJobsCountN: string,
+  graphDependenciesCount1: string,
+  graphDependenciesCountN: string,
+  graphSuccessRate: string,
+  graphZoomIn: string,
+  graphZoomMax: string,
+  graphZoomOut: string,
+  graphResetView: string,
+};
 
 interface StoredState {
   scale: number;
@@ -32,7 +44,7 @@ const props = defineProps<{
   workflowId: string;
   workflowLink?: string;
   triggerEvent?: string;
-  locale: Record<string, string>;
+  locale: WorkflowGraphLocale;
 }>();
 
 const settingKeyStates = 'actions-graph-states';
@@ -113,7 +125,7 @@ const successRateLabel = computed(() => {
 const graphStats = computed(() => [
   trN(props.jobs.length, props.locale.graphJobsCount1, props.locale.graphJobsCountN),
   trN(edges.value.length, props.locale.graphDependenciesCount1, props.locale.graphDependenciesCountN),
-  props.locale.graphSuccessRate.replace('%s', successRateLabel.value),
+  trString(props.locale.graphSuccessRate, successRateLabel.value),
 ].join(' • '));
 
 const minScale = 0.3;
@@ -178,7 +190,7 @@ function handleWheel(event: WheelEvent) {
 
 onMounted(() => {
   loadSavedState();
-  watch([translateX, translateY, scale], debounce(500, saveState));
+  watch([translateX, translateY, scale], debounce(saveState, 500));
   document.addEventListener('mousemove', handleMouseMoveOnDocument);
   document.addEventListener('mouseup', handleMouseUpOnDocument);
 });
@@ -216,11 +228,13 @@ const splitRoutedEdges = computed(() => {
 const nodesWithIncomingEdge = computed(() => new Set(graphModel.value.adjacency.incomingByNodeId.keys()));
 const nodesWithOutgoingEdge = computed(() => new Set(graphModel.value.adjacency.outgoingByNodeId.keys()));
 
+function isJobLinked(job: ActionsJob) {
+  return !job.isReusableCaller && job.status !== 'pending'; // callers have no detail page, pending jobs have nothing to show yet
+}
+
 function onNodeClick(job: GraphNode | ActionsJob, event: MouseEvent) {
   const target = 'jobs' in job ? job.jobs[0]! : job;
-  // Reusable callers have no per-job detail page; clicking them is a no-op so the graph
-  // doesn't lead users to a dead destination.
-  if (target.isReusableCaller) return;
+  if (!isJobLinked(target)) return;
   const link = `${props.runLink}/jobs/${target.id}`;
   if (event.ctrlKey || event.metaKey) {
     window.open(link, '_blank');
@@ -330,6 +344,7 @@ function onNodeClick(job: GraphNode | ActionsJob, event: MouseEvent) {
                     v-for="ch in job.jobs"
                     :key="ch.id"
                     class="graph-list-row"
+                    :class="{ 'unlinked-node': !isJobLinked(ch) }"
                     @mouseenter="handleNodeMouseEnter(job.id)"
                     @click.stop="onNodeClick(ch, $event)"
                   >
@@ -361,6 +376,7 @@ function onNodeClick(job: GraphNode | ActionsJob, event: MouseEvent) {
                   v-for="ch in job.jobs"
                   :key="ch.id"
                   class="graph-list-row"
+                  :class="{ 'unlinked-node': !isJobLinked(ch) }"
                   @mouseenter="handleNodeMouseEnter(job.id)"
                   @click="onNodeClick(ch, $event)"
                 >
@@ -379,7 +395,7 @@ function onNodeClick(job: GraphNode | ActionsJob, event: MouseEvent) {
           <g
             v-else
             class="job-node-group"
-            :class="{ 'related-node': isNodeHighlighted(job.id), 'caller-node': job.jobs[0]!.isReusableCaller }"
+            :class="{ 'related-node': isNodeHighlighted(job.id), 'unlinked-node': !isJobLinked(job.jobs[0]!) }"
             @click="onNodeClick(job, $event)"
             @mouseenter="handleNodeMouseEnter(job.id)"
             @mouseleave="handleNodeMouseLeave"
@@ -431,9 +447,9 @@ function onNodeClick(job: GraphNode | ActionsJob, event: MouseEvent) {
   justify-content: space-between;
   align-items: center;
   padding: 16px 16px 8px;
-  background: var(--color-console-bg);
   gap: var(--gap-block);
   flex-wrap: wrap;
+  border-bottom: 1px solid var(--color-secondary);
 }
 
 .graph-workflow-info {
@@ -511,8 +527,13 @@ function onNodeClick(job: GraphNode | ActionsJob, event: MouseEvent) {
   transition: opacity 0.15s ease;
 }
 
-.job-node-group.caller-node {
+.job-node-group.unlinked-node,
+.graph-list-row.unlinked-node {
   cursor: default;
+}
+
+.graph-list-row.unlinked-node:hover {
+  background: none;
 }
 
 .job-node-group:hover .job-rect,

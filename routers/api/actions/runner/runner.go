@@ -8,9 +8,10 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"uuid"
 
-	runnerv1 "gitea.dev/actions-proto-go/runner/v1"
-	"gitea.dev/actions-proto-go/runner/v1/runnerv1connect"
+	runnerv1 "gitea.dev/actionslib/runner/v1"
+	"gitea.dev/actionslib/runner/v1/runnerv1connect"
 	actions_model "gitea.dev/models/actions"
 	repo_model "gitea.dev/models/repo"
 	user_model "gitea.dev/models/user"
@@ -20,7 +21,6 @@ import (
 	actions_service "gitea.dev/services/actions"
 
 	"connectrpc.com/connect"
-	gouuid "github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -74,15 +74,27 @@ func (s *Service) Register(
 	// create new runner
 	name := util.EllipsisDisplayString(req.Msg.Name, 255)
 	runner := &actions_model.ActionRunner{
-		UUID:                 gouuid.New().String(),
+		UUID:                 uuid.New().String(),
 		Name:                 name,
 		OwnerID:              runnerToken.OwnerID,
 		RepoID:               runnerToken.RepoID,
 		Version:              req.Msg.Version,
-		AgentLabels:          labels,
 		Ephemeral:            req.Msg.Ephemeral,
 		HasCancellingSupport: hasCancellingSupport,
 	}
+
+	// Filtered here as well as in Declare: a runner that claims a privileged
+	// runner's label at registration and then never declares would otherwise
+	// keep it, which is the whole interception the reservation exists to stop.
+	// The runner has no id yet, so nothing is excluded from the reserved set.
+	kept, dropped, err := actions_model.FilterReservedLabels(ctx, runner, labels)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "check reserved labels: %v", err)
+	}
+	if len(dropped) > 0 {
+		log.Warn("runner %q registered with labels reserved to privileged runners; ignoring %v", name, dropped)
+	}
+	runner.AgentLabels = kept
 	runner.GenerateAndFillToken()
 
 	// create new runner
@@ -142,7 +154,22 @@ func (s *Service) Declare(
 	req *connect.Request[runnerv1.DeclareRequest],
 ) (*connect.Response[runnerv1.DeclareResponse], error) {
 	runner := GetRunner(ctx)
-	if err := actions_model.UpdateRunner(ctx, runner, applyDeclareRequestToRunner(runner, req.Msg)...); err != nil {
+	cols := applyDeclareRequestToRunner(runner, req.Msg)
+
+	// Runners declare their own labels, so an unprivileged one could otherwise
+	// claim a privileged runner's label and receive its work. Filtered after
+	// the request is applied rather than before, because the helper is where
+	// the labels land and it takes the request rather than a label slice.
+	kept, dropped, err := actions_model.FilterReservedLabels(ctx, runner, runner.AgentLabels)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "check reserved labels: %v", err)
+	}
+	if len(dropped) > 0 {
+		log.Warn("runner %d (%q) declared labels reserved to privileged runners; ignoring %v", runner.ID, runner.Name, dropped)
+	}
+	runner.AgentLabels = kept
+
+	if err := actions_model.UpdateRunner(ctx, runner, cols...); err != nil {
 		return nil, status.Errorf(codes.Internal, "update runner: %v", err)
 	}
 

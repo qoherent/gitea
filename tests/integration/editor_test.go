@@ -20,7 +20,6 @@ import (
 	"gitea.dev/models/unittest"
 	user_model "gitea.dev/models/user"
 	"gitea.dev/modules/git"
-	"gitea.dev/modules/gitrepo"
 	"gitea.dev/modules/test"
 	"gitea.dev/modules/translation"
 	"gitea.dev/modules/util"
@@ -39,6 +38,13 @@ func TestEditor(t *testing.T) {
 		t.Run("EditFile", func(t *testing.T) {
 			testEditFile(t, sessionUser2, "user2", "repo1", "master", "README.md", "Hello, World (direct)\n")
 			testEditFileToNewBranch(t, sessionUser2, "user2", "repo1", "master", "feature/test", "README.md", "Hello, World (commit-to-new-branch)\n")
+		})
+		t.Run("EditorconfigOfBranch", func(t *testing.T) {
+			testCreateFile(t, sessionUser2, "user2", "repo1", "master", "editorconfig", ".editorconfig", "[*]\nindent_size = 2\n")
+			for _, link := range []string{"/user2/repo1/src/branch/editorconfig/README.md", "/user2/repo1/blame/branch/editorconfig/README.md"} {
+				resp := sessionUser2.MakeRequest(t, NewRequest(t, "GET", link), http.StatusOK)
+				AssertHTMLElement(t, NewHTMLParser(t, resp.Body), ".tab-size-2", true)
+			}
 		})
 		t.Run("PatchFile", testEditorPatchFile)
 		t.Run("DeleteFile", func(t *testing.T) {
@@ -221,10 +227,10 @@ func testEditorWebGitCommitEmail(t *testing.T) {
 	require.True(t, user.KeepEmailPrivate)
 
 	repo1 := unittest.AssertExistsAndLoadBean(t, &repo_model.Repository{ID: 1})
-	gitRepo, _ := gitrepo.OpenRepository(t.Context(), repo1)
+	gitRepo, _ := git.OpenRepository(t.Context(), repo1)
 	defer gitRepo.Close()
 	getLastCommit := func(t *testing.T) *git.Commit {
-		c, err := gitRepo.GetBranchCommit("master")
+		c, err := gitRepo.GetBranchCommit(t.Context(), "master")
 		require.NoError(t, err)
 		return c
 	}
@@ -349,9 +355,9 @@ index 0000000000..bbbbbbbbbb
 			},
 		)
 
-		commit1, err := gitRepo.GetCommitByPath("patch-file-1.txt")
+		commit1, err := gitRepo.GetCommitByPath(t.Context(), "patch-file-1.txt")
 		require.NoError(t, err)
-		commit2, err := gitRepo.GetCommitByPath("patch-file-2.txt")
+		commit2, err := gitRepo.GetCommitByPath(t.Context(), "patch-file-2.txt")
 		require.NoError(t, err)
 		resp1, _ := testWebGit(t,
 			"/user2/repo1/_cherrypick/"+commit1.ID.String()+"/master", map[string]string{"revert": "true"},
@@ -389,7 +395,7 @@ func testForkToEditFile(t *testing.T, session *TestSession, user, owner, repo, b
 		// Archive the repository
 		req := NewRequestWithValues(t, "POST", "/"+path.Join(user, repo, "settings"),
 			map[string]string{
-				"repo_name": repo,
+				"repo_name": user + "/" + repo,
 				"action":    "archive",
 			},
 		)
@@ -403,7 +409,7 @@ func testForkToEditFile(t *testing.T, session *TestSession, user, owner, repo, b
 		// Unfork the repository
 		req = NewRequestWithValues(t, "POST", "/"+path.Join(user, repo, "settings"),
 			map[string]string{
-				"repo_name": repo,
+				"repo_name": user + "/" + repo,
 				"action":    "convert_fork",
 			},
 		)
@@ -421,10 +427,10 @@ func testForkToEditFile(t *testing.T, session *TestSession, user, owner, repo, b
 		resp := session.MakeRequest(t, req, http.StatusOK)
 		htmlDoc := NewHTMLParser(t, resp.Body)
 
-		uploadForm := htmlDoc.doc.Find(".form-fetch-action")
+		uploadForm := htmlDoc.doc.Find(".repo-file-upload.form-fetch-action")
 		formAction := uploadForm.AttrOr("action", "")
 		assert.Equal(t, fmt.Sprintf("/%s/%s-1/_upload/%s/%s?from_base_branch=%s&foo=bar", user, repo, branch, filePath, branch), formAction)
-		uploadLink := uploadForm.Find(".dropzone").AttrOr("data-link-url", "")
+		uploadLink := uploadForm.Find(".dropzone").AttrOr("data-upload-url", "")
 		assert.Equal(t, fmt.Sprintf("/%s/%s-1/upload-file", user, repo), uploadLink)
 		newBranchName := uploadForm.Find("input[name=new_branch_name]").AttrOr("value", "")
 		assert.Equal(t, user+"-patch-1", newBranchName)

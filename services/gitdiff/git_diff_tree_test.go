@@ -208,7 +208,7 @@ func TestGitDiffTree(t *testing.T) {
 
 	for _, tt := range test {
 		t.Run(tt.Name, func(t *testing.T) {
-			gitRepo, err := git.OpenRepository(t.Context(), tt.RepoPath)
+			gitRepo, err := git.OpenRepositoryLocal(t.Context(), tt.RepoPath)
 			assert.NoError(t, err)
 			defer gitRepo.Close()
 
@@ -221,7 +221,7 @@ func TestGitDiffTree(t *testing.T) {
 }
 
 func TestGitDiffTreeRespectsDiffOrderFile(t *testing.T) {
-	gitRepo, err := git.OpenRepository(t.Context(), "../../modules/git/tests/repos/repo5_pulls")
+	gitRepo, err := git.OpenRepositoryLocal(t.Context(), "../../modules/git/tests/repos/repo5_pulls")
 	require.NoError(t, err)
 	defer gitRepo.Close()
 
@@ -321,6 +321,22 @@ func TestParseGitDiffTree(t *testing.T) {
 					BaseMode:   git.EntryModeBlob,
 					HeadBlobID: "97248f79a90aaf81fe7fd74b33c1cb182dd41783",
 					BaseBlobID: "c8a055cfb45cd39747292983ad1797ceab40f5b1",
+				},
+			},
+		},
+		{
+			// make sure our code can unquote paths no matter core.quotePath is true or false: quoted chars are like "\t" or "\{oct}"
+			Name:      "file modified with a C-quoted path",
+			GitOutput: ":100644 100644 b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0 04fea06420ca60892f73becee3614f6d023a4b7f M\t" + `"\346\227\245\346\234\254\350\252\236\ttest.txt"`,
+			Expected: []*DiffTreeRecord{
+				{
+					Status:     "modified",
+					HeadPath:   "日本語\ttest.txt",
+					BasePath:   "日本語\ttest.txt",
+					HeadMode:   git.EntryModeBlob,
+					BaseMode:   git.EntryModeBlob,
+					HeadBlobID: "04fea06420ca60892f73becee3614f6d023a4b7f",
+					BaseBlobID: "b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0",
 				},
 			},
 		},
@@ -454,7 +470,7 @@ func TestGitDiffTreeErrors(t *testing.T) {
 
 	for _, tt := range test {
 		t.Run(tt.Name, func(t *testing.T) {
-			gitRepo, err := git.OpenRepository(t.Context(), tt.RepoPath)
+			gitRepo, err := git.OpenRepositoryLocal(t.Context(), tt.RepoPath)
 			assert.NoError(t, err)
 			defer gitRepo.Close()
 

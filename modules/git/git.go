@@ -13,7 +13,9 @@ import (
 	"runtime"
 	"strings"
 
+	"gitea.dev/modules/cache"
 	"gitea.dev/modules/git/gitcmd"
+	"gitea.dev/modules/globallock"
 	"gitea.dev/modules/log"
 	"gitea.dev/modules/setting"
 	"gitea.dev/modules/tempdir"
@@ -22,7 +24,7 @@ import (
 	"github.com/hashicorp/go-version"
 )
 
-const RequiredVersion = "2.13.0" // the minimum Git version required
+const RequiredVersion = "2.25.0" // the minimum Git version required
 
 type Features struct {
 	gitVersion *version.Version
@@ -69,12 +71,12 @@ func DefaultFeatures() *Features {
 func loadGitVersionFeatures() (*Features, error) {
 	stdout, _, runErr := gitcmd.NewCommand("version").RunStdString(context.Background())
 	if runErr != nil {
-		return nil, runErr
+		return nil, fmt.Errorf(`failed to run command "git version": %w`, runErr)
 	}
 
 	ver, err := parseGitVersionLine(strings.TrimSpace(stdout))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf(`failed to parse output of command "git version": %w`, err)
 	}
 
 	features := &Features{gitVersion: ver, UsingGogit: isGogit}
@@ -106,7 +108,11 @@ func parseGitVersionLine(s string) (*version.Version, error) {
 	if len(versionFields) > 3 {
 		versionFields = versionFields[:3]
 	}
-	return version.NewVersion(strings.Join(versionFields, "."))
+	ver, err := version.NewVersion(strings.Join(versionFields, "."))
+	if err != nil {
+		return nil, fmt.Errorf("invalid git version: %q: %w", s, err)
+	}
+	return ver, nil
 }
 
 func checkGitVersionCompatibility(gitVer *version.Version) error {
@@ -190,6 +196,7 @@ func RunGitTests(m interface{ Run() int }) {
 }
 
 func runGitTests(m interface{ Run() int }) int {
+	_ = cache.Init()
 	gitHomePath, cleanup, err := tempdir.OsTempDir("gitea-test").MkdirTempRandom("git-home")
 	if err != nil {
 		return testlogger.MainErrorf("unable to create temp dir: %v", err)
@@ -201,4 +208,12 @@ func runGitTests(m interface{ Run() int }) int {
 		return testlogger.MainErrorf("failed to call Init: %v", err)
 	}
 	return m.Run()
+}
+
+func LockConfigAndDo(ctx context.Context, repo RepositoryFacade, fn func(ctx context.Context) error) error {
+	return globallock.LockAndDo(ctx, "repo-config:"+repo.GitRepoManagedID(), fn)
+}
+
+func LockWriteAndDo(ctx context.Context, repo RepositoryFacade, fn func(ctx context.Context) error) error {
+	return globallock.LockAndDo(ctx, "repo-write:"+repo.GitRepoManagedID(), fn)
 }

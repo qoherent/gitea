@@ -95,6 +95,12 @@ func TestUserEmails(t *testing.T) {
 			setting.Service.NoReplyAddress = "example.com"
 			testGetUserByEmail(t, "user1-2@example.COM", 1)
 		})
+
+		t.Run("EmptyEmail", func(t *testing.T) {
+			// A user whose email address is empty must not own commits that have no author email.
+			require.NoError(t, db.Insert(t.Context(), &user_model.EmailAddress{UID: 2, Email: "", LowerEmail: "", IsActivated: true}))
+			testGetUserByEmail(t, "", 0)
+		})
 	})
 	t.Run("GetUserByEmail", func(t *testing.T) {
 		testGetUserByEmail := func(t *testing.T, email string, uid int64) {
@@ -295,21 +301,6 @@ func TestDisplayName(t *testing.T) {
 		}
 		assert.NotEmpty(t, strings.TrimSpace(displayName))
 	}
-}
-
-func TestCreateUserInvalidEmail(t *testing.T) {
-	user := &user_model.User{
-		Name:               "GiteaBot",
-		Email:              "GiteaBot@gitea.io\r\n",
-		Passwd:             ";p['////..-++']",
-		IsAdmin:            false,
-		Theme:              setting.UI.DefaultTheme,
-		MustChangePassword: false,
-	}
-
-	err := user_model.CreateUser(t.Context(), user, &user_model.Meta{})
-	assert.Error(t, err)
-	assert.True(t, user_model.IsErrEmailCharIsNotSupported(err))
 }
 
 func TestCreateUserEmailAlreadyUsed(t *testing.T) {

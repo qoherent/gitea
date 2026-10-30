@@ -225,6 +225,10 @@ func getReleasePayloadInfo(p *api.ReleasePayload, linkFormatter linkFormatter, w
 		text += " by " + linkFormatter(setting.AppURL+url.PathEscape(p.Sender.UserName), p.Sender.UserName)
 	}
 
+	if p.Action != api.HookReleaseDeleted && len(p.Release.Attachments) > 0 {
+		text += fmt.Sprintf(" (assets: %d)", len(p.Release.Attachments))
+	}
+
 	return text, color
 }
 
@@ -293,6 +297,13 @@ func getIssueCommentPayloadInfo(p *api.IssueCommentPayload, linkFormatter linkFo
 	return text, issueTitle, color
 }
 
+func getRepoRenamedFrom(p *api.RepositoryPayload) string {
+	if p.Changes == nil || p.Changes.Name == nil {
+		return ""
+	}
+	return p.Changes.Name.From
+}
+
 func getPackagePayloadInfo(p *api.PackagePayload, linkFormatter linkFormatter, withSender bool) (text string, color int) {
 	refLink := linkFormatter(p.Package.HTMLURL, p.Package.Name+":"+p.Package.Version)
 
@@ -336,7 +347,7 @@ func getWorkflowRunPayloadInfo(p *api.WorkflowRunPayload, linkFormatter linkForm
 
 	text = fmt.Sprintf("Workflow Run %s: %s", p.Action, refLink)
 	switch description {
-	case "waiting":
+	case "waiting", "pending":
 		color = orangeColor
 	case "queued":
 		color = orangeColorLight

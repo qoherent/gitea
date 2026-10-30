@@ -72,7 +72,7 @@ func TestRemoveTeamMemberRemovesSubscriptionsAndStopwatches(t *testing.T) {
 	repo := unittest.AssertExistsAndLoadBean(t, &repo_model.Repository{ID: 3})
 	issue := unittest.AssertExistsAndLoadBean(t, &issues_model.Issue{RepoID: repo.ID})
 
-	assert.NoError(t, repo_model.WatchRepo(ctx, user, repo, true))
+	assert.NoError(t, repo_model.WatchRepoAuto(ctx, user, repo, true))
 	assert.NoError(t, issues_model.CreateOrUpdateIssueWatch(ctx, user.ID, issue.ID, true))
 	ok, err := issues_model.CreateIssueStopwatch(ctx, user, issue)
 	assert.NoError(t, err)
@@ -82,7 +82,7 @@ func TestRemoveTeamMemberRemovesSubscriptionsAndStopwatches(t *testing.T) {
 
 	watch, err := repo_model.GetWatch(ctx, user.ID, repo.ID)
 	assert.NoError(t, err)
-	assert.False(t, repo_model.IsWatchMode(watch.Mode))
+	assert.False(t, repo_model.IsWatchModeWatching(watch.Mode))
 
 	_, exists, err := issues_model.GetIssueWatch(ctx, user.ID, issue.ID)
 	assert.NoError(t, err)
@@ -327,4 +327,27 @@ func TestIncludesAllRepositoriesTeams(t *testing.T) {
 		}
 	}
 	assert.NoError(t, DeleteOrganization(t.Context(), org, false), "DeleteOrganization")
+}
+
+// TestUpdateTeamPersistsPrivilegedCompute covers the column list in
+// UpdateTeam, which named every field but this one. The web form and the API
+// both assigned the grant to the struct and then called UpdateTeam, so turning
+// it on or off on an existing team appeared to succeed and changed nothing --
+// and creation, which inserts every column, worked, which is what kept this
+// hidden. A grant that cannot be revoked is the dangerous direction.
+func TestUpdateTeamPersistsPrivilegedCompute(t *testing.T) {
+	assert.NoError(t, unittest.PrepareTestDatabase())
+
+	team := unittest.AssertExistsAndLoadBean(t, &organization.Team{ID: 2})
+	assert.False(t, team.OrgPrivilegedCompute, "fixture is expected to carry no grant")
+
+	team.OrgPrivilegedCompute = true
+	assert.NoError(t, UpdateTeam(t.Context(), team, false, false))
+	reloaded := unittest.AssertExistsAndLoadBean(t, &organization.Team{ID: 2})
+	assert.True(t, reloaded.OrgPrivilegedCompute, "granting it did not reach the database")
+
+	reloaded.OrgPrivilegedCompute = false
+	assert.NoError(t, UpdateTeam(t.Context(), reloaded, false, false))
+	revoked := unittest.AssertExistsAndLoadBean(t, &organization.Team{ID: 2})
+	assert.False(t, revoked.OrgPrivilegedCompute, "revoking it did not reach the database")
 }

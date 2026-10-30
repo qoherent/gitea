@@ -632,6 +632,6 @@ func TestCreateOrganization4(t *testing.T) {
 func TestOrAnyRepoUnitPermission(t *testing.T) {
 	defer test.MockVariableValue(&setting.Service.RequireSignInViewStrict, true)()
 	org := organization.Organization{Visibility: structs.VisibleTypeLimited}
-	assert.Equal(t, perm.AccessModeNone, org.UnitPermission(t.Context(), nil, unit.TypeWiki))
-	assert.Equal(t, perm.AccessModeRead, org.UnitPermission(t.Context(), &user_model.User{}, unit.TypeWiki))
+	assert.Equal(t, perm.AccessModeNone, org.AnyRepoUnitPermission(t.Context(), nil, unit.TypeWiki))
+	assert.Equal(t, perm.AccessModeRead, org.AnyRepoUnitPermission(t.Context(), &user_model.User{}, unit.TypeWiki))
 }

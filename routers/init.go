@@ -12,7 +12,6 @@ import (
 	"gitea.dev/models"
 	authmodel "gitea.dev/models/auth"
 	"gitea.dev/modules/cache"
-	"gitea.dev/modules/eventsource"
 	"gitea.dev/modules/git"
 	"gitea.dev/modules/git/gitcmd"
 	"gitea.dev/modules/log"
@@ -40,11 +39,11 @@ import (
 	"gitea.dev/services/automerge"
 	"gitea.dev/services/cron"
 	feed_service "gitea.dev/services/feed"
+	gitproxy_service "gitea.dev/services/gitproxy"
 	indexer_service "gitea.dev/services/indexer"
 	"gitea.dev/services/mailer"
 	mailer_incoming "gitea.dev/services/mailer/incoming"
 	markup_service "gitea.dev/services/markup"
-	repo_migrations "gitea.dev/services/migrations"
 	mirror_service "gitea.dev/services/mirror"
 	"gitea.dev/services/oauth2_provider"
 	packages_spec "gitea.dev/services/packages/pkgspec"
@@ -55,6 +54,7 @@ import (
 	"gitea.dev/services/task"
 	"gitea.dev/services/uinotification"
 	"gitea.dev/services/webhook"
+	websocket_service "gitea.dev/services/websocket"
 )
 
 func mustInit(fn func() error) {
@@ -147,15 +147,15 @@ func InitWebInstalled(ctx context.Context) {
 	mustInit(packages_spec.InitManager)
 
 	// Booting long running goroutines.
+	mustInitCtx(ctx, gitproxy_service.Run) // must start before mirror/migration services spawn git
 	mustInit(indexer_service.Init)
 
 	mirror_service.InitSyncMirrors()
 	mustInit(webhook.Init)
 	mustInit(pull_service.Init)
-	mustInit(automerge.Init)
+	mustInitCtx(ctx, automerge.Init)
 	mustInit(task.Init)
-	mustInit(repo_migrations.Init)
-	eventsource.GetManager().Init()
+	mustInit(websocket_service.Init)
 	mustInitCtx(ctx, mailer_incoming.Init)
 
 	mustInitCtx(ctx, syncAppConfForGit)

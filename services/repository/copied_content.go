@@ -25,7 +25,7 @@ import (
 	user_model "gitea.dev/models/user"
 	"gitea.dev/modules/git"
 	"gitea.dev/modules/git/gitcmd"
-	"gitea.dev/modules/gitrepo"
+	"gitea.dev/modules/git/gitrepo"
 	"gitea.dev/modules/lfs"
 	"gitea.dev/modules/log"
 	"gitea.dev/modules/storage"
@@ -121,7 +121,11 @@ type preparedCopiedFile struct {
 	representation string
 	pointer        *lfs.Pointer
 	sourceEntry    *git.TreeEntry
-	needSave       bool
+	// v28 reads a tree entry's blob through the repository it came from
+	// rather than from the entry itself, so the entry alone is no longer
+	// enough to reach the bytes.
+	sourceGit *git.Repository
+	needSave  bool
 }
 
 type openedGitRepo struct {
@@ -145,7 +149,7 @@ func FinalizeCopiedContent(ctx context.Context, req *FinalizeCopiedContentReques
 		}
 		return nil, unavailableErr(err)
 	}
-	if !actor.IsActive || actor.ProhibitLogin || actor.IsGhost() || actor.IsGiteaActions() {
+	if !actor.IsActive || actor.ProhibitLogin || actor.IsGhost() || actor.ID == user_model.ActionsUserID {
 		return nil, copiedErr(http.StatusForbidden, "forbidden", "actor is not permitted")
 	}
 
@@ -191,17 +195,17 @@ func FinalizeCopiedContent(ctx context.Context, req *FinalizeCopiedContentReques
 		return nil, err
 	}
 
-	destCommit, err := loadExactCommit(destOpened.git, destRepo, req.Destination.Commit)
+	destCommit, err := loadExactCommit(ctx, destOpened.git, destRepo, req.Destination.Commit)
 	if err != nil {
 		return nil, err
 	}
-	if err := requireCommitOnBranch(destOpened.git, req.Destination.Branch, destCommit); err != nil {
+	if err := requireCommitOnBranch(ctx, destOpened.git, req.Destination.Branch, destCommit); err != nil {
 		return nil, err
 	}
 	if err := requireCommitParent(destCommit, req.Destination.Parent, destRepo); err != nil {
 		return nil, err
 	}
-	if err := requireExactCreates(destOpened.git, destCommit, req.Files); err != nil {
+	if err := requireExactCreates(ctx, destRepo, destCommit, req.Files); err != nil {
 		return nil, err
 	}
 
@@ -212,11 +216,11 @@ func FinalizeCopiedContent(ctx context.Context, req *FinalizeCopiedContentReques
 		if err != nil {
 			return nil, concealSourceErr(err)
 		}
-		sourceCommit, err := loadExactCommit(sourceOpened.git, sourceRepos[file.SourceRepositoryID], file.SourceCommit)
+		sourceCommit, err := loadExactCommit(ctx, sourceOpened.git, sourceRepos[file.SourceRepositoryID], file.SourceCommit)
 		if err != nil {
 			return nil, concealSourceErr(err)
 		}
-		preparedFile, added, err := prepareCopiedFile(ctx, destRepo, sourceRepos[file.SourceRepositoryID], destCommit, sourceCommit, file, i)
+		preparedFile, added, err := prepareCopiedFile(ctx, destRepo, sourceRepos[file.SourceRepositoryID], destOpened.git, sourceOpened.git, destCommit, sourceCommit, file, i)
 		if err != nil {
 			return nil, err
 		}
@@ -383,7 +387,7 @@ func openCopiedRepo(ctx context.Context, opened map[int64]*openedGitRepo, repo *
 	if existing, ok := opened[repo.ID]; ok {
 		return existing, nil
 	}
-	gitRepo, err := gitrepo.OpenRepository(ctx, repo)
+	gitRepo, err := git.OpenRepository(ctx, repo)
 	if err != nil {
 		return nil, unavailableErr(err)
 	}
@@ -400,15 +404,16 @@ func closeOpenedGitRepos(opened map[int64]*openedGitRepo) {
 	}
 }
 
-func loadExactCommit(gitRepo *git.Repository, repo *repo_model.Repository, commitID string) (*git.Commit, error) {
-	objectFormat := git.ObjectFormatFromName(repo.ObjectFormatName)
-	if objectFormat == nil {
+func loadExactCommit(ctx context.Context, gitRepo *git.Repository, repo *repo_model.Repository, commitID string) (*git.Commit, error) {
+	if !git.IsValidObjectFormat(repo.ObjectFormatName) {
 		return nil, copiedErr(http.StatusServiceUnavailable, "unavailable", "repository object format is unavailable")
 	}
-	if len(commitID) != objectFormat.FullLength() || !objectFormat.IsValid(commitID) {
+	objectFormat := git.ObjectFormatFromName(repo.ObjectFormatName)
+	// v28 dropped ObjectFormat.IsValid; parsing the hash is the check now.
+	if _, idErr := git.NewIDFromString(commitID); len(commitID) != objectFormat.FullLength() || idErr != nil {
 		return nil, copiedErr(http.StatusBadRequest, "invalid_request", "commit id is invalid")
 	}
-	commit, err := gitRepo.GetCommit(commitID)
+	commit, err := gitRepo.GetCommit(ctx, commitID)
 	if err != nil {
 		if git.IsErrNotExist(err) {
 			return nil, copiedErr(http.StatusNotFound, "not_found", "commit not found")
@@ -421,11 +426,11 @@ func loadExactCommit(gitRepo *git.Repository, repo *repo_model.Repository, commi
 	return commit, nil
 }
 
-func requireCommitOnBranch(gitRepo *git.Repository, branch string, destCommit *git.Commit) error {
-	if !gitRepo.IsBranchExist(branch) {
+func requireCommitOnBranch(ctx context.Context, gitRepo *git.Repository, branch string, destCommit *git.Commit) error {
+	if !gitRepo.IsBranchExist(ctx, branch) {
 		return copiedErr(http.StatusConflict, "conflict", "destination branch no longer proves publication")
 	}
-	branchCommit, err := gitRepo.GetBranchCommit(branch)
+	branchCommit, err := gitRepo.GetBranchCommit(ctx, branch)
 	if err != nil {
 		if git.IsErrNotExist(err) || git.IsErrBranchNotExist(err) {
 			return copiedErr(http.StatusConflict, "conflict", "destination branch no longer proves publication")
@@ -435,7 +440,7 @@ func requireCommitOnBranch(gitRepo *git.Repository, branch string, destCommit *g
 	if branchCommit.ID.String() == destCommit.ID.String() {
 		return nil
 	}
-	reachable, err := branchCommit.HasPreviousCommit(destCommit.ID)
+	reachable, err := branchCommit.HasPreviousCommit(ctx, gitRepo, destCommit.ID)
 	if err != nil {
 		return unavailableErr(err)
 	}
@@ -452,11 +457,11 @@ func requireCommitParent(commit *git.Commit, parent *string, repo *repo_model.Re
 		}
 		return nil
 	}
-	objectFormat := git.ObjectFormatFromName(repo.ObjectFormatName)
-	if objectFormat == nil {
+	if !git.IsValidObjectFormat(repo.ObjectFormatName) {
 		return copiedErr(http.StatusServiceUnavailable, "unavailable", "repository object format is unavailable")
 	}
-	if len(*parent) != objectFormat.FullLength() || !objectFormat.IsValid(*parent) {
+	objectFormat := git.ObjectFormatFromName(repo.ObjectFormatName)
+	if _, idErr := git.NewIDFromString(*parent); len(*parent) != objectFormat.FullLength() || idErr != nil {
 		return copiedErr(http.StatusBadRequest, "invalid_request", "destination.parent is invalid")
 	}
 	if commit.ParentCount() != 1 {
@@ -473,8 +478,15 @@ func requireCommitParent(commit *git.Commit, parent *string, repo *repo_model.Re
 }
 
 // Compare only changed paths, with bounded output even for an unrelated large commit.
-func requireExactCreates(repo *git.Repository, destCommit *git.Commit, files []CopiedContentFileMapping) error {
-	ctx, cancel := context.WithCancel(repo.Ctx)
+func requireExactCreates(ctx context.Context, repo *repo_model.Repository, destCommit *git.Commit, files []CopiedContentFileMapping) error {
+	return requireExactCreatesIn(ctx, gitrepo.RepoLocalPath(repo), destCommit, files)
+}
+
+// Split from the above so a test can point it at a throwaway repository on
+// disk. v28 resolves a command's working directory from the repository model
+// rather than from the opened repository, which a bare path is not.
+func requireExactCreatesIn(ctx context.Context, repoPath string, destCommit *git.Commit, files []CopiedContentFileMapping) error {
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	output := &copiedDiffWriter{remaining: CopiedContentMaxJSONBytes, cancel: cancel}
 	cmd := gitcmd.NewCommand("diff-tree", "--no-commit-id", "--root", "--name-status", "--no-renames", "--ignore-submodules=none", "--no-ext-diff", "-r", "-z")
@@ -482,7 +494,7 @@ func requireExactCreates(repo *git.Repository, destCommit *git.Commit, files []C
 		cmd.AddDynamicArguments(destCommit.Parents[0].String())
 	}
 	cmd.AddDynamicArguments(destCommit.ID.String()).AddArguments("--")
-	err := cmd.WithDir(repo.Path).WithStdoutCopy(output).Run(ctx)
+	err := cmd.WithDir(repoPath).WithStdoutCopy(output).Run(ctx)
 	if output.exceeded {
 		return copiedErr(http.StatusRequestEntityTooLarge, "too_large", "destination diff exceeds the allowed size")
 	}
@@ -527,15 +539,15 @@ func (w *copiedDiffWriter) Write(p []byte) (int, error) {
 	return w.buffer.Write(p)
 }
 
-func prepareCopiedFile(ctx context.Context, destRepo, sourceRepo *repo_model.Repository, destCommit, sourceCommit *git.Commit, file CopiedContentFileMapping, index int) (*preparedCopiedFile, int64, error) {
-	sourceEntry, err := sourceCommit.GetTreeEntryByPath(file.SourcePath)
+func prepareCopiedFile(ctx context.Context, destRepo, sourceRepo *repo_model.Repository, destGit, sourceGit *git.Repository, destCommit, sourceCommit *git.Commit, file CopiedContentFileMapping, index int) (*preparedCopiedFile, int64, error) {
+	sourceEntry, err := sourceCommit.GetTreeEntryByPath(ctx, sourceGit, file.SourcePath)
 	if err != nil {
 		if git.IsErrNotExist(err) {
 			return nil, 0, copiedErr(http.StatusNotFound, "not_found", "repository not found")
 		}
 		return nil, 0, unavailableErr(err)
 	}
-	destEntry, err := destCommit.GetTreeEntryByPath(file.DestinationPath)
+	destEntry, err := destCommit.GetTreeEntryByPath(ctx, destGit, file.DestinationPath)
 	if err != nil {
 		if git.IsErrNotExist(err) {
 			return nil, 0, copiedErr(http.StatusConflict, "conflict", "destination commit omits a planned path")
@@ -551,7 +563,7 @@ func prepareCopiedFile(ctx context.Context, destRepo, sourceRepo *repo_model.Rep
 		return nil, 0, copiedUnprocessableAt("git mode does not match", index)
 	}
 
-	sourcePointer, sourceIsPointer, err := readCopiedPointer(sourceEntry)
+	sourcePointer, sourceIsPointer, err := readCopiedPointer(ctx, sourceGit, sourceEntry)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -564,30 +576,31 @@ func prepareCopiedFile(ctx context.Context, destRepo, sourceRepo *repo_model.Rep
 		destPath:       file.DestinationPath,
 		representation: file.Representation,
 		sourceEntry:    sourceEntry,
+		sourceGit:      sourceGit,
 	}
 
 	switch file.Representation {
 	case CopiedContentRepresentationGit:
-		if err := boundRegularSize(sourceEntry.Blob().Size()); err != nil {
+		if err := boundRegularSize(sourceEntry.Blob(sourceGit).Size(ctx)); err != nil {
 			return nil, 0, err
 		}
-		equal, err := gitBlobsEqual(sourceRepo, destRepo, sourceEntry, destEntry)
+		equal, err := gitBlobsEqual(ctx, sourceGit, destGit, sourceRepo, destRepo, sourceEntry, destEntry)
 		if err != nil {
 			return nil, 0, err
 		}
 		if !equal {
 			return nil, 0, copiedUnprocessableAt("git content does not match", index)
 		}
-		return prepared, sourceEntry.Blob().Size(), nil
+		return prepared, sourceEntry.Blob(sourceGit).Size(ctx), nil
 	case CopiedContentRepresentationLFS:
-		destPointer, destIsPointer, err := readCopiedPointer(destEntry)
+		destPointer, destIsPointer, err := readCopiedPointer(ctx, destGit, destEntry)
 		if err != nil {
 			return nil, 0, err
 		}
 		if !destIsPointer {
 			return nil, 0, copiedUnprocessableAt("target LFS pointer is invalid", index)
 		}
-		if destContent, err := destEntry.Blob().GetBlobBytes(lfs.MetaFileMaxSize); err != nil {
+		if destContent, err := destEntry.Blob(destGit).GetBlobBytes(ctx, lfs.MetaFileMaxSize); err != nil {
 			return nil, 0, unavailableErr(err)
 		} else if string(destContent) != destPointer.StringContent() {
 			return nil, 0, copiedUnprocessableAt("target LFS pointer is not canonical", index)
@@ -602,10 +615,10 @@ func prepareCopiedFile(ctx context.Context, destRepo, sourceRepo *repo_model.Rep
 			}
 			return prepared, 0, nil
 		}
-		if sourceEntry.Blob().Size() > CopiedContentMaxRegularFileBytes {
+		if sourceEntry.Blob(sourceGit).Size(ctx) > CopiedContentMaxRegularFileBytes {
 			return nil, 0, copiedErr(http.StatusRequestEntityTooLarge, "too_large", "regular source exceeds the allowed size")
 		}
-		computed, err := hashBlobSHA256(ctx, sourceEntry.Blob(), CopiedContentMaxRegularFileBytes)
+		computed, err := hashBlobSHA256(ctx, sourceEntry.Blob(sourceGit), CopiedContentMaxRegularFileBytes)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -634,7 +647,7 @@ func verifySourceLFSAssociation(ctx context.Context, sourceRepo *repo_model.Repo
 }
 
 func materializeCopiedPointer(ctx context.Context, store *lfs.ContentStore, file *preparedCopiedFile) error {
-	reader, err := file.sourceEntry.Blob().DataAsync()
+	reader, err := file.sourceEntry.Blob(file.sourceGit).DataAsync(ctx)
 	if err != nil {
 		return unavailableErr(err)
 	}
@@ -652,19 +665,19 @@ func materializeCopiedPointer(ctx context.Context, store *lfs.ContentStore, file
 	return nil
 }
 
-func gitBlobsEqual(sourceRepo, destRepo *repo_model.Repository, sourceEntry, destEntry *git.TreeEntry) (bool, error) {
-	if sourceEntry.Blob().Size() != destEntry.Blob().Size() {
+func gitBlobsEqual(ctx context.Context, sourceGit, destGit *git.Repository, sourceRepo, destRepo *repo_model.Repository, sourceEntry, destEntry *git.TreeEntry) (bool, error) {
+	if sourceEntry.Blob(sourceGit).Size(ctx) != destEntry.Blob(destGit).Size(ctx) {
 		return false, nil
 	}
 	if sourceRepo.ObjectFormatName == destRepo.ObjectFormatName && sourceEntry.ID.String() == destEntry.ID.String() {
 		return true, nil
 	}
-	sourceReader, err := sourceEntry.Blob().DataAsync()
+	sourceReader, err := sourceEntry.Blob(sourceGit).DataAsync(ctx)
 	if err != nil {
 		return false, unavailableErr(err)
 	}
 	defer sourceReader.Close()
-	destReader, err := destEntry.Blob().DataAsync()
+	destReader, err := destEntry.Blob(destGit).DataAsync(ctx)
 	if err != nil {
 		return false, unavailableErr(err)
 	}
@@ -689,12 +702,12 @@ func gitBlobsEqual(sourceRepo, destRepo *repo_model.Repository, sourceEntry, des
 	}
 }
 
-func readCopiedPointer(entry *git.TreeEntry) (lfs.Pointer, bool, error) {
-	blob := entry.Blob()
-	if blob.Size() == 0 || blob.Size() > lfs.MetaFileMaxSize {
+func readCopiedPointer(ctx context.Context, gitRepo *git.Repository, entry *git.TreeEntry) (lfs.Pointer, bool, error) {
+	blob := entry.Blob(gitRepo)
+	if blob.Size(ctx) == 0 || blob.Size(ctx) > lfs.MetaFileMaxSize {
 		return lfs.Pointer{}, false, nil
 	}
-	data, err := blob.GetBlobBytes(lfs.MetaFileMaxSize)
+	data, err := blob.GetBlobBytes(ctx, lfs.MetaFileMaxSize)
 	if err != nil {
 		return lfs.Pointer{}, false, unavailableErr(err)
 	}
@@ -706,10 +719,10 @@ func readCopiedPointer(entry *git.TreeEntry) (lfs.Pointer, bool, error) {
 }
 
 func hashBlobSHA256(ctx context.Context, blob *git.Blob, maxSize int64) (lfs.Pointer, error) {
-	if blob.Size() > maxSize {
+	if blob.Size(ctx) > maxSize {
 		return lfs.Pointer{}, copiedErr(http.StatusRequestEntityTooLarge, "too_large", "regular source exceeds the allowed size")
 	}
-	reader, err := blob.DataAsync()
+	reader, err := blob.DataAsync(ctx)
 	if err != nil {
 		return lfs.Pointer{}, unavailableErr(err)
 	}
@@ -756,7 +769,7 @@ func reverifyCopiedAccess(ctx context.Context, actor *user_model.User, destRepo 
 	if err != nil {
 		return unavailableErr(err)
 	}
-	if !freshActor.IsActive || freshActor.ProhibitLogin || freshActor.IsGhost() || freshActor.IsGiteaActions() {
+	if !freshActor.IsActive || freshActor.ProhibitLogin || freshActor.IsGhost() || freshActor.ID == user_model.ActionsUserID {
 		return copiedErr(http.StatusForbidden, "forbidden", "actor is not permitted")
 	}
 	actor = freshActor

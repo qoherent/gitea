@@ -7,7 +7,8 @@ import (
 	"bytes"
 	"testing"
 
-	"gitea.com/gitea/runner/act/model"
+	"gitea.dev/actionslib/pkg/model"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -102,4 +103,38 @@ jobs:
 	for i, w := range want {
 		require.Equal(t, w, steps[i].RawContinueOnError, "step %d, payload:\n%s", i, payload)
 	}
+}
+
+// Folded (`>`) scalars in with/env used to gain blank lines and have spaces turned into newlines
+// on every Marshal -> Parse cycle.
+func TestSingleWorkflowRoundTripFoldedScalar(t *testing.T) {
+	const wf = `name: demo
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/build
+        with:
+          cfg: >
+            begin
+              first "indented" line with path dir/Installer Scripts/some long path/another long path/some file name.xzy,
+              second "indented" line
+            end
+`
+	const want = "begin\n  first \"indented\" line with path dir/Installer Scripts/some long path/another long path/some file name.xzy,\n  second \"indented\" line\nend\n"
+	sws, err := Parse([]byte(wf))
+	require.NoError(t, err)
+	require.Len(t, sws, 1)
+	for range 3 {
+		payload, err := sws[0].Marshal()
+		require.NoError(t, err)
+		sws, err = Parse(payload)
+		require.NoError(t, err)
+		require.Len(t, sws, 1)
+	}
+	_, job := sws[0].Job()
+	var with map[string]string
+	require.NoError(t, job.Steps[0].With.Decode(&with))
+	require.Equal(t, want, with["cfg"])
 }

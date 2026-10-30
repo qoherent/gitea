@@ -65,7 +65,7 @@ func (s *contextLocalStorage) Save(path string, r io.Reader, _ int64) (int64, er
 	}
 	defer func() {
 		_ = tmp.Close()
-		_ = util.Remove(tmp.Name())
+		_ = util.RemoveWithRetry(tmp.Name())
 	}()
 	n, err := io.Copy(tmp, &storageContextReader{ctx: s.ctx, reader: r})
 	if err != nil {
@@ -80,7 +80,7 @@ func (s *contextLocalStorage) Save(path string, r io.Reader, _ int64) (int64, er
 	if err := util.ApplyUmask(tmp.Name(), os.ModePerm&0o666); err != nil {
 		return n, err
 	}
-	return n, util.Rename(tmp.Name(), p)
+	return n, util.RenameWithRetry(tmp.Name(), p)
 }
 
 type storageContextReader struct {

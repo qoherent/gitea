@@ -7,15 +7,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
-	runnerv1 "gitea.dev/actions-proto-go/runner/v1"
+	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"gitea.dev/models/db"
 	repo_model "gitea.dev/models/repo"
 	"gitea.dev/models/shared/types"
 	user_model "gitea.dev/models/user"
-	"gitea.dev/modules/container"
 	"gitea.dev/modules/optional"
 	"gitea.dev/modules/setting"
 	"gitea.dev/modules/timeutil"
@@ -49,6 +49,18 @@ type ActionRunner struct {
 	Description string                 `xorm:"TEXT"`
 	Base        int                    // 0 native 1 docker 2 virtual machine
 	RepoRange   string                 // glob match which repositories could use this runner
+	// PrivilegedCompute marks a runner that executes on hardware the instance
+	// owns rather than throwaway CI capacity. A job reaches it only if the user
+	// who triggered the run holds OrgPrivilegedCompute in the owning
+	// organization, which is enforced in CreateTaskForRunner. Only a site admin
+	// can set it.
+	//
+	// No migration declares this column. ActionRunner is a registered model, so
+	// SyncAllTables adds it at startup from this struct -- which keeps the fork
+	// out of Gitea's version table, where every entry we add is a conflict on
+	// the next upstream merge and a number that means something different here
+	// than it does upstream.
+	PrivilegedCompute bool `xorm:"NOT NULL DEFAULT false"`
 
 	Token     string `xorm:"-"`
 	TokenHash string `xorm:"UNIQUE"` // sha256 of token
@@ -58,7 +70,7 @@ type ActionRunner struct {
 	LastOnline timeutil.TimeStamp `xorm:"index"`
 	LastActive timeutil.TimeStamp `xorm:"index"`
 
-	// Store labels defined in state file (default: .runner file) of `act_runner`
+	// Store labels defined in state file (default: .runner file) of the `runner`
 	AgentLabels []string `xorm:"TEXT"`
 	// Store if this is a runner that only ever get one single job assigned
 	Ephemeral bool `xorm:"ephemeral NOT NULL DEFAULT false"`
@@ -200,8 +212,7 @@ func (r *ActionRunner) GenerateAndFillToken() {
 // CanMatchLabels checks whether the runner's labels can match a job's "runs-on"
 // See https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idruns-on
 func (r *ActionRunner) CanMatchLabels(jobRunsOn []string) bool {
-	runnerLabelSet := container.SetOf(r.AgentLabels...)
-	return runnerLabelSet.Contains(jobRunsOn...) // match all labels
+	return !slices.ContainsFunc(jobRunsOn, func(label string) bool { return !util.SliceContainsString(r.AgentLabels, label, true) })
 }
 
 func init() {

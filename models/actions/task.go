@@ -5,13 +5,12 @@ package actions
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	runnerv1 "gitea.dev/actions-proto-go/runner/v1"
+	runnerv1 "gitea.dev/actionslib/runner/v1"
 	auth_model "gitea.dev/models/auth"
 	"gitea.dev/models/db"
 	"gitea.dev/models/unit"
@@ -22,8 +21,6 @@ import (
 	"gitea.dev/modules/timeutil"
 	"gitea.dev/modules/util"
 
-	lru "github.com/hashicorp/golang-lru/v2"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	"xorm.io/builder"
 )
 
@@ -66,25 +63,8 @@ type ActionTask struct {
 // it only decides whether the runner is reachable, not whether the task should be killed.
 const taskReportTimeout = time.Minute
 
-var successfulTokenTaskCache *lru.Cache[string, any]
-
 func init() {
-	db.RegisterModel(new(ActionTask), func() error {
-		if setting.SuccessfulTokensCacheSize > 0 {
-			var err error
-			successfulTokenTaskCache, err = lru.New[string, any](setting.SuccessfulTokensCacheSize)
-			if err != nil {
-				return fmt.Errorf("unable to allocate Task cache: %v", err)
-			}
-		} else {
-			successfulTokenTaskCache = nil
-		}
-		return nil
-	})
-}
-
-func (task *ActionTask) Duration() time.Duration {
-	return calculateDuration(task.Started, task.Stopped, task.Status, task.Updated)
+	db.RegisterModel(new(ActionTask))
 }
 
 func (task *ActionTask) IsStopped() bool {
@@ -171,6 +151,38 @@ func GetTaskByID(ctx context.Context, id int64) (*ActionTask, error) {
 	return &task, nil
 }
 
+// GetTasksMapByIDs returns the found tasks keyed by ID, silently omitting IDs that no longer exist.
+func GetTasksMapByIDs(ctx context.Context, ids []int64) (map[int64]*ActionTask, error) {
+	tasks := make(map[int64]*ActionTask, len(ids))
+	if len(ids) == 0 {
+		return tasks, nil
+	}
+	return tasks, db.GetEngine(ctx).In("id", ids).Find(&tasks)
+}
+
+// GetTaskRunnerNames returns runner names keyed by task ID without loading task logs.
+func GetTaskRunnerNames(ctx context.Context, taskIDs []int64) (map[int64]string, error) {
+	names := make(map[int64]string, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return names, nil
+	}
+	var rows []struct {
+		ID   int64
+		Name string
+	}
+	err := db.GetEngine(ctx).Table("action_task").
+		Join("INNER", "action_runner", "action_runner.id = action_task.runner_id").
+		In("action_task.id", taskIDs).
+		Select("action_task.id, action_runner.name").Find(&rows)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		names[row.ID] = row.Name
+	}
+	return names, nil
+}
+
 func GetRunningTaskByToken(ctx context.Context, token string) (*ActionTask, error) {
 	errNotExist := fmt.Errorf("task with token %q: %w", token, util.ErrNotExist)
 	if token == "" {
@@ -186,21 +198,21 @@ func GetRunningTaskByToken(ctx context.Context, token string) (*ActionTask, erro
 		}
 	}
 
+	cacheKey := "actions:" + token
 	lastEight := token[len(token)-8:]
-
-	if id := getTaskIDFromCache(token); id > 0 {
+	if cached, _ := auth_model.TokenCache().Get(cacheKey); cached != nil {
 		task := &ActionTask{
 			TokenLastEight: lastEight,
 		}
 		// Re-get the task from the db in case it has been deleted in the intervening period
-		has, err := db.GetEngine(ctx).ID(id).Get(task)
+		has, err := db.GetEngine(ctx).ID(cached.TokenID).Get(task)
 		if err != nil {
 			return nil, err
 		}
-		if has {
+		if has && util.CryptoConstTimeEqual(task.TokenHash, cached.TokenHash) {
 			return task, nil
 		}
-		successfulTokenTaskCache.Remove(token)
+		auth_model.TokenCache().Remove(cacheKey)
 	}
 
 	var tasks []*ActionTask
@@ -214,10 +226,8 @@ func GetRunningTaskByToken(ctx context.Context, token string) (*ActionTask, erro
 
 	for _, t := range tasks {
 		tempHash := auth_model.HashToken(token, t.TokenSalt)
-		if subtle.ConstantTimeCompare([]byte(t.TokenHash), []byte(tempHash)) == 1 {
-			if successfulTokenTaskCache != nil {
-				successfulTokenTaskCache.Add(token, t.ID)
-			}
+		if util.CryptoConstTimeEqual(t.TokenHash, tempHash) {
+			auth_model.TokenCache().Add(cacheKey, &auth_model.TokenCacheItem{TokenID: t.ID, TokenHash: t.TokenHash})
 			return t, nil
 		}
 	}
@@ -251,6 +261,8 @@ var pickTaskBatchSize = 100
 // atomically claims it. It iterates through all matching jobs so that a
 // concurrent claim by another runner (which would lose the optimistic lock on
 // job #1) does not leave the remaining jobs permanently unassigned.
+// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute logic
+// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute::DispatchDecision interface
 func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask, bool, error) {
 	if db.InTransaction(ctx) {
 		return nil, false, errors.New("CreateTaskForRunner must not be called within a database transaction")
@@ -266,6 +278,61 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 			Where(builder.Eq{"`repository`.owner_id": runner.OwnerID, "`repo_unit`.type": unit.TypeActions}))
 	}
 	baseCond := builder.Eq{"task_id": 0, "status": StatusWaiting, "is_reusable_caller": false}.And(jobCond)
+
+	if runner.PrivilegedCompute {
+		// Scope alone is the wrong gate for a privileged runner: it asks which
+		// repository the run belongs to, when the question is who triggered it.
+		// Write access to one organization repository would otherwise carry
+		// code execution on the organization's hardware.
+		if runner.OwnerID == 0 {
+			// The grant is per-organization, so a runner with no owning
+			// organization has nothing to check against and takes no job. The
+			// edit path refuses to create this state; failing closed here keeps
+			// a row that arrives another way -- a direct database write, some
+			// future registration path -- from dispatching anyway.
+			log.Warn("actions: runner %d (%q) is marked privileged but has no owning organization, so it will be given no jobs", runner.ID, runner.Name)
+			return nil, false, nil
+		}
+		// Who holds the grant in this runner's organization. Built twice
+		// because the condition below asks it of two different records.
+		granted := func() *builder.Builder {
+			return builder.Select("`team_user`.uid").From("team_user").
+				Join("INNER", "team", "`team`.id = `team_user`.team_id").
+				Where(builder.Eq{
+					"`team`.org_id":                 runner.OwnerID,
+					"`team`.org_privileged_compute": true,
+				})
+		}
+
+		// Judged on whoever asked for this attempt, not on whoever caused the
+		// run. A re-run is recorded on a new ActionRunAttempt carrying the
+		// person who pressed the button, while `action_run.trigger_user_id`
+		// keeps the original. Reading only the run would admit an ungranted
+		// person re-running a granted colleague's job -- a way onto the
+		// hardware needing nothing but a run they can see.
+		//
+		// A job with no attempt predates ActionRunAttempt, and the run's own
+		// trigger is the only answer there is for it.
+		baseCond = baseCond.And(builder.Or(
+			builder.In("run_attempt_id",
+				builder.Select("id").From("action_run_attempt").
+					Where(builder.In("trigger_user_id", granted()))),
+			builder.And(
+				builder.Eq{"run_attempt_id": 0},
+				builder.In("run_id",
+					builder.Select("id").From("action_run").
+						Where(builder.In("trigger_user_id", granted()))),
+			),
+		))
+	}
+
+	// A label reserved to a privileged runner is honoured at the point a job is
+	// matched, not only where a runner declares its labels: a row that gained a
+	// reserved label another way must still not receive that work.
+	reserved, err := reservedPrivilegedLabels(ctx, runner)
+	if err != nil {
+		return nil, false, err
+	}
 
 	// TODO: a more efficient way to filter labels
 	log.Trace("runner labels: %v", runner.AgentLabels)
@@ -288,9 +355,18 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 		if err := e.Where(cond).Asc("updated", "id").Limit(pickTaskBatchSize).Find(&jobs); err != nil {
 			return nil, false, err
 		}
+		// A short page means no waiting jobs remain beyond it.
+		isLastPage := len(jobs) < pickTaskBatchSize
+		if !isLastPage {
+			last := jobs[len(jobs)-1] // read before a lost claim bumps Updated
+			cursorUpdated, cursorID = last.Updated, last.ID
+		}
 
 		for _, v := range jobs {
 			if !runner.CanMatchLabels(v.RunsOn) {
+				continue
+			}
+			if claimsReservedLabel(reserved, v.RunsOn) {
 				continue
 			}
 			task, ok, err := claimJobForRunner(ctx, runner, v)
@@ -303,12 +379,9 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 			// Another runner claimed this job concurrently; try the next one.
 		}
 
-		// A short page means no waiting jobs remain beyond it.
-		if len(jobs) < pickTaskBatchSize {
+		if isLastPage {
 			return nil, false, nil
 		}
-		last := jobs[len(jobs)-1]
-		cursorUpdated, cursorID = last.Updated, last.ID
 	}
 }
 
@@ -492,6 +565,7 @@ func UpdateTaskByState(ctx context.Context, runnerID int64, state *runnerv1.Task
 			return nil
 		}
 
+		now := timeutil.TimeStampNow()
 		// state.Result is not unspecified means the task is finished
 		if state.Result != runnerv1.Result_RESULT_UNSPECIFIED {
 			if task.Status == StatusCancelling {
@@ -500,7 +574,7 @@ func UpdateTaskByState(ctx context.Context, runnerID int64, state *runnerv1.Task
 			} else {
 				task.Status = StatusFromResult(state.Result)
 			}
-			task.Stopped = timeutil.TimeStamp(state.StoppedAt.AsTime().Unix())
+			task.Stopped = now
 			if err := UpdateTask(ctx, task, "status", "stopped"); err != nil {
 				return err
 			}
@@ -514,7 +588,7 @@ func UpdateTaskByState(ctx context.Context, runnerID int64, state *runnerv1.Task
 			}
 		} else {
 			// Force update ActionTask.Updated to avoid the task being judged as a zombie task
-			task.Updated = timeutil.TimeStampNow()
+			task.Updated = now
 			if err := UpdateTask(ctx, task, "updated"); err != nil {
 				return err
 			}
@@ -530,11 +604,13 @@ func UpdateTaskByState(ctx context.Context, runnerID int64, state *runnerv1.Task
 				result = v.Result
 				step.LogIndex = v.LogIndex
 				step.LogLength = v.LogLength
-				step.Started = convertTimestamp(v.StartedAt)
-				step.Stopped = convertTimestamp(v.StoppedAt)
+				if step.Started == 0 && v.StartedAt != nil {
+					step.Started = now
+				}
 			}
 			if result != runnerv1.Result_RESULT_UNSPECIFIED {
 				step.Status = StatusFromResult(result)
+				step.Stopped = util.IfZero(step.Stopped, now)
 			} else if step.Started != 0 {
 				step.Status = StatusRunning
 			}
@@ -646,13 +722,6 @@ func FindOldTasksToExpire(ctx context.Context, olderThan timeutil.TimeStamp, lim
 		Find(&tasks)
 }
 
-func convertTimestamp(timestamp *timestamppb.Timestamp) timeutil.TimeStamp {
-	if timestamp.GetSeconds() == 0 && timestamp.GetNanos() == 0 {
-		return timeutil.TimeStamp(0)
-	}
-	return timeutil.TimeStamp(timestamp.AsTime().Unix())
-}
-
 func logFileName(repoFullName string, taskID int64) string {
 	ret := fmt.Sprintf("%s/%02x/%d.log", repoFullName, taskID%256, taskID)
 
@@ -661,19 +730,4 @@ func logFileName(repoFullName string, taskID int64) string {
 	}
 
 	return ret
-}
-
-func getTaskIDFromCache(token string) int64 {
-	if successfulTokenTaskCache == nil {
-		return 0
-	}
-	tInterface, ok := successfulTokenTaskCache.Get(token)
-	if !ok {
-		return 0
-	}
-	t, ok := tInterface.(int64)
-	if !ok {
-		return 0
-	}
-	return t
 }

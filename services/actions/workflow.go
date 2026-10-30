@@ -4,10 +4,13 @@
 package actions
 
 import (
+	"context"
 	"fmt"
-	"strconv"
 
+	"gitea.dev/actionslib/pkg/exprparser"
+	"gitea.dev/actionslib/pkg/model"
 	actions_model "gitea.dev/models/actions"
+	audit_model "gitea.dev/models/audit"
 	"gitea.dev/models/perm"
 	access_model "gitea.dev/models/perm/access"
 	repo_model "gitea.dev/models/repo"
@@ -19,13 +22,12 @@ import (
 	"gitea.dev/modules/reqctx"
 	api "gitea.dev/modules/structs"
 	"gitea.dev/modules/util"
-	"gitea.dev/services/context"
+	"gitea.dev/services/audit"
+	gitea_context "gitea.dev/services/context"
 	"gitea.dev/services/convert"
-
-	"gitea.com/gitea/runner/act/model"
 )
 
-func EnableOrDisableWorkflow(ctx *context.APIContext, workflowID string, isEnable bool) error {
+func EnableOrDisableWorkflow(ctx *gitea_context.APIContext, workflowID string, isEnable bool) error {
 	workflow, err := convert.GetActionWorkflow(ctx, ctx.Repo.GitRepo, ctx.Repo.Repository, workflowID)
 	if err != nil {
 		return err
@@ -40,7 +42,21 @@ func EnableOrDisableWorkflow(ctx *context.APIContext, workflowID string, isEnabl
 		cfg.DisableWorkflow(workflow.ID)
 	}
 
-	return repo_model.UpdateRepoUnitConfig(ctx, cfgUnit)
+	if err := repo_model.UpdateRepoUnitConfig(ctx, cfgUnit); err != nil {
+		return err
+	}
+
+	RecordWorkflowToggle(ctx, ctx.Repo.Repository, workflow.ID, isEnable)
+	return nil
+}
+
+// RecordWorkflowToggle writes the enable/disable audit event for a workflow.
+func RecordWorkflowToggle(ctx context.Context, repo *repo_model.Repository, workflowID string, isEnable bool) {
+	action := audit_model.ActionsWorkflowDisable
+	if isEnable {
+		action = audit_model.ActionsWorkflowEnable
+	}
+	audit.Record(ctx, action, repo, "workflow", workflowID)
 }
 
 // DispatchActionWorkflow manually triggers a workflow_dispatch run.
@@ -85,12 +101,12 @@ func DispatchActionWorkflow(ctx reqctx.RequestContext, doer *user_model.User, re
 	var runTargetCommit *git.Commit
 	var err error
 	if refName.IsTag() {
-		runTargetCommit, err = gitRepo.GetTagCommit(refName.TagName())
+		runTargetCommit, err = gitRepo.GetTagCommit(ctx, refName.TagName())
 	} else if refName.IsBranch() {
-		runTargetCommit, err = gitRepo.GetBranchCommit(refName.BranchName())
+		runTargetCommit, err = gitRepo.GetBranchCommit(ctx, refName.BranchName())
 	} else {
 		refName = git.RefNameFromBranch(ref)
-		runTargetCommit, err = gitRepo.GetBranchCommit(ref)
+		runTargetCommit, err = gitRepo.GetBranchCommit(ctx, ref)
 	}
 	if err != nil {
 		return 0, util.ErrorWrapTranslatable(
@@ -119,14 +135,17 @@ func DispatchActionWorkflow(ctx reqctx.RequestContext, doer *user_model.User, re
 	}
 
 	// resolve the workflow content and record its source on the run (scoped runs read from the source repo)
-	content, err := resolveDispatchWorkflowContent(ctx, repo, runTargetCommit, workflowID, scopedWorkflowSourceRepoID, isScoped, run)
+	content, err := resolveDispatchWorkflowContent(ctx, repo, gitRepo, runTargetCommit, workflowID, scopedWorkflowSourceRepoID, isScoped, run)
 	if err != nil {
 		return 0, err
 	}
 
+	if _, err := jobparser.ValidateWorkflowStatic(content); err != nil {
+		return 0, util.ErrorWrapTranslatable(util.NewInvalidArgumentErrorf("invalid workflow %q: %v", workflowID, err), "actions.runs.invalid_workflow_helper", err.Error())
+	}
 	workflow, err := jobparser.ReadWorkflow(content)
 	if err != nil {
-		return 0, fmt.Errorf("failed to unmarshal workflow content: %w", err)
+		return 0, util.ErrorWrapTranslatable(util.NewInvalidArgumentErrorf("invalid workflow %q: %v", workflowID, err), "actions.runs.invalid_workflow_helper", err.Error())
 	}
 	// get inputs from post
 	workflowDispatch := workflow.WorkflowDispatchConfig()
@@ -164,6 +183,8 @@ func DispatchActionWorkflow(ctx reqctx.RequestContext, doer *user_model.User, re
 	if err := PrepareRunAndInsert(ctx, content, run, inputsWithDefaults); err != nil {
 		return 0, fmt.Errorf("PrepareRun: %w", err)
 	}
+	audit.RecordAs(ctx, doer, audit_model.ActionsWorkflowDispatch, repo,
+		"workflow", workflowID, "ref", ref, "run_id", run.ID)
 	return run.ID, nil
 }
 
@@ -180,16 +201,10 @@ func coerceDispatchInputTypes(dispatch *model.WorkflowDispatch, inputs map[strin
 }
 
 // dispatchEventInputs stringifies the typed inputs for `github.event.inputs`.
-// workflow_dispatch input types are string, choice, boolean and environment, so after
-// coerceDispatchInputTypes a value is either already a string or a bool.
 func dispatchEventInputs(inputs map[string]any) map[string]any {
 	eventInputs := make(map[string]any, len(inputs))
 	for name, value := range inputs {
-		if b, ok := value.(bool); ok {
-			eventInputs[name] = strconv.FormatBool(b)
-		} else {
-			eventInputs[name] = value
-		}
+		eventInputs[name] = exprparser.CoerceToString(value)
 	}
 	return eventInputs
 }
@@ -197,18 +212,18 @@ func dispatchEventInputs(inputs map[string]any) map[string]any {
 // resolveDispatchWorkflowContent returns the YAML for a dispatched workflow and records its source on the run.
 //   - Repo-level: from the consumer's runTargetCommit.
 //   - Scoped: from the source repo's default branch.
-func resolveDispatchWorkflowContent(ctx reqctx.RequestContext, repo *repo_model.Repository, runTargetCommit *git.Commit, workflowID string, sourceRepoID int64, isScoped bool, run *actions_model.ActionRun) ([]byte, error) {
+func resolveDispatchWorkflowContent(ctx reqctx.RequestContext, repo *repo_model.Repository, gitRepo *git.Repository, runTargetCommit *git.Commit, workflowID string, sourceRepoID int64, isScoped bool, run *actions_model.ActionRun) ([]byte, error) {
 	if isScoped {
 		return resolveScopedDispatchContent(ctx, repo, sourceRepoID, workflowID, run)
 	}
 
-	_, entries, err := actions.ListWorkflows(runTargetCommit)
+	_, entries, err := actions.ListWorkflows(ctx, gitRepo, runTargetCommit)
 	if err != nil {
 		return nil, err
 	}
 	for _, e := range entries {
 		if e.Name() == workflowID {
-			return actions.GetContentFromEntry(e)
+			return actions.GetContentFromEntry(ctx, gitRepo, e)
 		}
 	}
 	return nil, util.ErrorWrapTranslatable(
