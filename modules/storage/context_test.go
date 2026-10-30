@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -16,7 +17,6 @@ import (
 
 	"gitea.dev/modules/setting"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/minio/minio-go/v7"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,9 +46,20 @@ func TestStorageWithContextRemoteCancellation(t *testing.T) {
 				require.NoError(t, err)
 				original = &MinioStorage{cfg: &setting.MinioStorageConfig{}, ctx: t.Context(), client: client, bucket: "copy-test"}
 			} else {
-				client, err := azblob.NewClientWithNoCredential(server.URL, nil)
+				// v28 implements Azure blob storage itself over plain HTTP
+				// rather than through the SDK, so the backend is an
+				// *http.Client and an endpoint rather than an azblob client.
+				endpoint, err := url.Parse(server.URL)
 				require.NoError(t, err)
-				original = &AzureBlobStorage{cfg: &setting.AzureBlobStorageConfig{Container: "copy-test"}, ctx: t.Context(), client: client}
+				original = &AzureBlobStorage{
+					cfg:         &setting.AzureBlobStorageConfig{Container: "copy-test"},
+					ctx:         t.Context(),
+					client:      server.Client(),
+					endpoint:    endpoint,
+					blockSize:   4 * 1024 * 1024,
+					concurrency: 4,
+					retryDelay:  200 * time.Millisecond,
+				}
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()

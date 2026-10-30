@@ -317,6 +317,8 @@ func TestTeam_UnitAccessModeEx(t *testing.T) {
 	mode, exist = team.UnitAccessModeEx(t.Context(), unit.TypeActions)
 	assert.False(t, exist)
 	assert.Equal(t, perm.AccessModeNone, mode)
+}
+
 // An organization is a privileged one when a site admin has granted any of its
 // teams privileged compute. That is what gates registering a runner of its
 // own, and it needs no column: the grant is already admin-only, so asking it

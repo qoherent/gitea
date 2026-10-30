@@ -25,6 +25,7 @@ import (
 	user_model "gitea.dev/models/user"
 	"gitea.dev/modules/git"
 	"gitea.dev/modules/git/gitcmd"
+	"gitea.dev/modules/git/gitrepo"
 	"gitea.dev/modules/lfs"
 	"gitea.dev/modules/log"
 	"gitea.dev/modules/storage"
@@ -478,6 +479,13 @@ func requireCommitParent(commit *git.Commit, parent *string, repo *repo_model.Re
 
 // Compare only changed paths, with bounded output even for an unrelated large commit.
 func requireExactCreates(ctx context.Context, repo *repo_model.Repository, destCommit *git.Commit, files []CopiedContentFileMapping) error {
+	return requireExactCreatesIn(ctx, gitrepo.RepoLocalPath(repo), destCommit, files)
+}
+
+// Split from the above so a test can point it at a throwaway repository on
+// disk. v28 resolves a command's working directory from the repository model
+// rather than from the opened repository, which a bare path is not.
+func requireExactCreatesIn(ctx context.Context, repoPath string, destCommit *git.Commit, files []CopiedContentFileMapping) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	output := &copiedDiffWriter{remaining: CopiedContentMaxJSONBytes, cancel: cancel}
@@ -486,7 +494,7 @@ func requireExactCreates(ctx context.Context, repo *repo_model.Repository, destC
 		cmd.AddDynamicArguments(destCommit.Parents[0].String())
 	}
 	cmd.AddDynamicArguments(destCommit.ID.String()).AddArguments("--")
-	err := cmd.WithRepo(repo).WithStdoutCopy(output).Run(ctx)
+	err := cmd.WithDir(repoPath).WithStdoutCopy(output).Run(ctx)
 	if output.exceeded {
 		return copiedErr(http.StatusRequestEntityTooLarge, "too_large", "destination diff exceeds the allowed size")
 	}
