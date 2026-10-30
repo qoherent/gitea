@@ -220,12 +220,19 @@ func CreateTeam(ctx *context.APIContext) {
 		CanCreateOrgRepo:        form.CanCreateOrgRepo,
 		Visibility:              organization.NormalizeTeamVisibility(form.Visibility),
 	}
+	// A site-admin decision, as on the web form. Passing this endpoint's
+	// owner check is not the same thing: an organization owner says who is
+	// in their teams, and only an administrator says that a team reaches
+	// hardware the instance owns.
+	team.OrgPrivilegedCompute = ctx.Doer.IsAdmin && form.PrivilegedCompute
+
 	_, err := assignTeamPermissionUnits(team, string(form.Permission), form.Units, form.UnitsMap)
 	if err != nil {
 		ctx.APIErrorAuto(err)
 		return
 	}
 
+	granting := team.OrgPrivilegedCompute
 	if err := org_service.NewTeam(ctx, team); err != nil {
 		if organization.IsErrTeamAlreadyExist(err) {
 			ctx.APIError(http.StatusUnprocessableEntity, err.Error())
@@ -233,6 +240,8 @@ func CreateTeam(ctx *context.APIContext) {
 			ctx.APIErrorInternal(err)
 		}
 		return
+	}
+	if granting {
 	}
 
 	apiTeam, err := convert.ToTeam(ctx, team, true)
@@ -279,6 +288,20 @@ func EditTeam(ctx *context.APIContext) {
 		team.CanCreateOrgRepo = team.IsOwnerTeam() || *form.CanCreateOrgRepo
 	}
 
+	// Site admins only, for the reason CreateTeam gives, and dropped rather
+	// than refused for the same one.
+	//
+	// No IsOwnerTeam special case either, unlike CanCreateOrgRepo above: the
+	// owner team is not given this grant automatically, so it is not forced on
+	// here.
+	grantChanged := false
+	if form.PrivilegedCompute != nil && ctx.Doer.IsAdmin {
+		// Only a change is recorded, so an edit that merely repeats the
+		// current value does not read in the trail as a fresh grant.
+		grantChanged = team.OrgPrivilegedCompute != *form.PrivilegedCompute
+		team.OrgPrivilegedCompute = *form.PrivilegedCompute
+	}
+
 	if len(form.Name) > 0 {
 		team.Name = form.Name
 	}
@@ -311,6 +334,8 @@ func EditTeam(ctx *context.APIContext) {
 	if err := org_service.UpdateTeam(ctx, team, isAuthChanged, isIncludeAllChanged); err != nil {
 		ctx.APIErrorInternal(err)
 		return
+	}
+	if grantChanged {
 	}
 
 	apiTeam, err := convert.ToTeam(ctx, team)

@@ -323,18 +323,19 @@ func AuthorizeOAuth(ctx *context.Context) {
 		return
 	}
 
-	var addedScopes, removedScopes []string
-	if grant != nil {
-		if form.Scope == "" {
-			form.Scope = grant.Scope
-		}
-		addedScopes, removedScopes = util.DiffSlice(strings.Fields(grant.Scope), strings.Fields(form.Scope))
+	grant, ok := settleFirstPartyGrant(ctx, app, grant, form)
+	if !ok {
+		return
 	}
-	scopeChanged := len(addedScopes) > 0 || len(removedScopes) > 0
 
 	// Redirect if user already granted access and the application is confidential or trusted otherwise
 	// I.e. always require authorization for untrusted public clients as recommended by RFC 6749 Section 10.2
-	if (app.ConfidentialClient || app.SkipSecondaryAuthorization) && grant != nil && !scopeChanged {
+	//
+	// Not when a scope is being asked for that the grant does not hold.
+	// Skipping consent there would hand back a token narrower than what was
+	// asked for, with nothing saying so, and the user would never be shown the
+	// new permission. Falling through asks them, per RFC 6749 Section 3.3.
+	if (app.ConfidentialClient || app.SkipSecondaryAuthorization) && grant != nil && grantCovers(grant, form.Scope) {
 		code, err := grant.GenerateNewAuthorizationCode(ctx, form.RedirectURI, form.CodeChallenge, form.CodeChallengeMethod)
 		if err != nil {
 			handleServerError(ctx, form.State, form.RedirectURI)
@@ -441,13 +442,8 @@ func GrantApplicationOAuth(ctx *context.Context) {
 			}, form.RedirectURI)
 			return
 		}
-
-		audit.Record(ctx, audit_model.UserOAuth2ApplicationGrant, ctx.Doer, "oauth2_application", app.Name, "granted_scope", form.Scope)
-	} else if grant.Scope != form.Scope {
-		if err := auth.UpdateGrantScope(ctx, grant, form.Scope); err != nil {
-			handleServerError(ctx, form.State, form.RedirectURI)
-			return
-		}
+	} else if !acceptGrantedScope(ctx, grant, form) {
+		return
 	}
 
 	if len(form.Nonce) > 0 {

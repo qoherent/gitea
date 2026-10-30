@@ -239,6 +239,11 @@ type ActionRunner struct {
 	Disabled  bool                 `json:"disabled"`
 	Ephemeral bool                 `json:"ephemeral"`
 	Labels    []*ActionRunnerLabel `json:"labels"`
+	// PrivilegedCompute marks a runner whose jobs may only come from a team
+	// holding the organization's privileged-compute grant. Reported so that a
+	// surface listing an organization's runners can say which of them are
+	// reachable by its members, which the labels alone never show.
+	PrivilegedCompute bool `json:"privileged_compute"`
 }
 
 // EditActionRunnerOption represents the editable fields for a runner.
@@ -246,6 +251,12 @@ type ActionRunner struct {
 type EditActionRunnerOption struct {
 	// required: true
 	Disabled *bool `json:"disabled"`
+	// Whether this runner is reserved for an organization's privileged-compute
+	// teams. A site-admin decision and only for an organization-owned runner,
+	// as on the web form: the grant that gates it is per-organization, so a
+	// global or repository-scoped runner marked privileged is one no job can
+	// ever be dispatched to. Left unchanged when omitted.
+	PrivilegedCompute *bool `json:"privileged_compute"`
 }
 
 // ActionRunnersResponse returns Runners

@@ -93,6 +93,10 @@ type Team struct {
 	CanCreateOrgRepo bool `xorm:"NOT NULL DEFAULT false"`
 
 	Visibility structs.VisibleType `xorm:"NOT NULL DEFAULT 2"`
+
+	// Whether this team's members may reach runners the instance has
+	// marked privileged. A site-admin grant; see PrivilegedCompute.
+	OrgPrivilegedCompute bool `xorm:"NOT NULL DEFAULT false"`
 }
 
 func (t *Team) IsPublic() bool  { return t.Visibility.IsPublic() }
@@ -287,4 +291,35 @@ func GetPossibleTeamByID(ctx context.Context, teamID int64) (int64, *Team, error
 func IncrTeamRepoNum(ctx context.Context, teamID int64) error {
 	_, err := db.GetEngine(ctx).Incr("num_repos").ID(teamID).Update(new(Team))
 	return err
+}
+
+// HasPrivilegedCompute reports whether any team in this organization carries
+// the privileged-compute grant.
+//
+// Which is what makes an organization a privileged one. The grant is set by a
+// site admin and by nobody else, so "an organization the instance has given
+// privileged compute to" needs no column of its own -- it is the same fact,
+// asked of the organization rather than of a person.
+//
+// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute::TeamGrant interface
+func HasPrivilegedCompute(ctx context.Context, orgID int64) (bool, error) {
+	return db.GetEngine(ctx).
+		Where(builder.Eq{"org_id": orgID, "org_privileged_compute": true}).
+		Exist(new(Team))
+}
+
+// OrgPrivilegedCompute reports whether the user may have runs dispatched to
+// runners marked PrivilegedCompute in this organization.
+//
+// The grant comes from membership of any team in the org carrying the flag, so
+// it is revoked by leaving that team rather than by leaving the organization.
+//
+// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute::TeamGrant interface
+func OrgPrivilegedCompute(ctx context.Context, orgID, uid int64) (bool, error) {
+	return db.GetEngine(ctx).
+		Where(builder.Eq{"team.org_privileged_compute": true}).
+		Join("INNER", "team_user", "team_user.team_id = team.id").
+		And("team_user.uid = ?", uid).
+		And("team_user.org_id = ?", orgID).
+		Exist(new(Team))
 }

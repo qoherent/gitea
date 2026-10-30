@@ -49,6 +49,18 @@ type ActionRunner struct {
 	Description string                 `xorm:"TEXT"`
 	Base        int                    // 0 native 1 docker 2 virtual machine
 	RepoRange   string                 // glob match which repositories could use this runner
+	// PrivilegedCompute marks a runner that executes on hardware the instance
+	// owns rather than throwaway CI capacity. A job reaches it only if the user
+	// who triggered the run holds OrgPrivilegedCompute in the owning
+	// organization, which is enforced in CreateTaskForRunner. Only a site admin
+	// can set it.
+	//
+	// No migration declares this column. ActionRunner is a registered model, so
+	// SyncAllTables adds it at startup from this struct -- which keeps the fork
+	// out of Gitea's version table, where every entry we add is a conflict on
+	// the next upstream merge and a number that means something different here
+	// than it does upstream.
+	PrivilegedCompute bool `xorm:"NOT NULL DEFAULT false"`
 
 	Token     string `xorm:"-"`
 	TokenHash string `xorm:"UNIQUE"` // sha256 of token

@@ -261,6 +261,8 @@ var pickTaskBatchSize = 100
 // atomically claims it. It iterates through all matching jobs so that a
 // concurrent claim by another runner (which would lose the optimistic lock on
 // job #1) does not leave the remaining jobs permanently unassigned.
+// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute logic
+// @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute::DispatchDecision interface
 func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask, bool, error) {
 	if db.InTransaction(ctx) {
 		return nil, false, errors.New("CreateTaskForRunner must not be called within a database transaction")
@@ -276,6 +278,61 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 			Where(builder.Eq{"`repository`.owner_id": runner.OwnerID, "`repo_unit`.type": unit.TypeActions}))
 	}
 	baseCond := builder.Eq{"task_id": 0, "status": StatusWaiting, "is_reusable_caller": false}.And(jobCond)
+
+	if runner.PrivilegedCompute {
+		// Scope alone is the wrong gate for a privileged runner: it asks which
+		// repository the run belongs to, when the question is who triggered it.
+		// Write access to one organization repository would otherwise carry
+		// code execution on the organization's hardware.
+		if runner.OwnerID == 0 {
+			// The grant is per-organization, so a runner with no owning
+			// organization has nothing to check against and takes no job. The
+			// edit path refuses to create this state; failing closed here keeps
+			// a row that arrives another way -- a direct database write, some
+			// future registration path -- from dispatching anyway.
+			log.Warn("actions: runner %d (%q) is marked privileged but has no owning organization, so it will be given no jobs", runner.ID, runner.Name)
+			return nil, false, nil
+		}
+		// Who holds the grant in this runner's organization. Built twice
+		// because the condition below asks it of two different records.
+		granted := func() *builder.Builder {
+			return builder.Select("`team_user`.uid").From("team_user").
+				Join("INNER", "team", "`team`.id = `team_user`.team_id").
+				Where(builder.Eq{
+					"`team`.org_id":                 runner.OwnerID,
+					"`team`.org_privileged_compute": true,
+				})
+		}
+
+		// Judged on whoever asked for this attempt, not on whoever caused the
+		// run. A re-run is recorded on a new ActionRunAttempt carrying the
+		// person who pressed the button, while `action_run.trigger_user_id`
+		// keeps the original. Reading only the run would admit an ungranted
+		// person re-running a granted colleague's job -- a way onto the
+		// hardware needing nothing but a run they can see.
+		//
+		// A job with no attempt predates ActionRunAttempt, and the run's own
+		// trigger is the only answer there is for it.
+		baseCond = baseCond.And(builder.Or(
+			builder.In("run_attempt_id",
+				builder.Select("id").From("action_run_attempt").
+					Where(builder.In("trigger_user_id", granted()))),
+			builder.And(
+				builder.Eq{"run_attempt_id": 0},
+				builder.In("run_id",
+					builder.Select("id").From("action_run").
+						Where(builder.In("trigger_user_id", granted()))),
+			),
+		))
+	}
+
+	// A label reserved to a privileged runner is honoured at the point a job is
+	// matched, not only where a runner declares its labels: a row that gained a
+	// reserved label another way must still not receive that work.
+	reserved, err := reservedPrivilegedLabels(ctx, runner)
+	if err != nil {
+		return nil, false, err
+	}
 
 	// TODO: a more efficient way to filter labels
 	log.Trace("runner labels: %v", runner.AgentLabels)
@@ -307,6 +364,9 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 
 		for _, v := range jobs {
 			if !runner.CanMatchLabels(v.RunsOn) {
+				continue
+			}
+			if claimsReservedLabel(reserved, v.RunsOn) {
 				continue
 			}
 			task, ok, err := claimJobForRunner(ctx, runner, v)

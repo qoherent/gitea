@@ -755,7 +755,7 @@ func ToActionRunner(ctx context.Context, runner *actions_model.ActionRunner) *ap
 			Type: "custom",
 		}
 	}
-	return &api.ActionRunner{
+	out := &api.ActionRunner{
 		ID:        runner.ID,
 		Name:      runner.Name,
 		Status:    apiStatus,
@@ -764,6 +764,11 @@ func ToActionRunner(ctx context.Context, runner *actions_model.ActionRunner) *ap
 		Ephemeral: runner.Ephemeral,
 		Labels:    labels,
 	}
+	// Set after the literal rather than inside it: the field name is longer
+	// than every key above, so adding it there makes gofmt realign all seven
+	// of upstream's lines, and a fork pays for those at every merge.
+	out.PrivilegedCompute = runner.PrivilegedCompute
+	return out
 }
 
 // ToVerification convert a git.Commit.Signature to an api.PayloadCommitVerification
@@ -917,6 +922,7 @@ func ToTeams(ctx context.Context, teams []*organization.Team, loadOrgs bool) ([]
 			Description:             t.Description,
 			IncludesAllRepositories: t.IncludesAllRepositories,
 			CanCreateOrgRepo:        t.CanCreateOrgRepo,
+			PrivilegedCompute:       t.OrgPrivilegedCompute,
 			Permission:              api.AccessLevelName(t.AccessMode.ToString()),
 			Units:                   slices.Collect(maps.Keys(unitsMap)),
 			UnitsMap:                t.GetUnitsMap(),

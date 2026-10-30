@@ -9,6 +9,7 @@ import (
 
 	actions_model "gitea.dev/models/actions"
 	"gitea.dev/models/db"
+	organization_model "gitea.dev/models/organization"
 	"gitea.dev/modules/setting"
 	api "gitea.dev/modules/structs"
 	"gitea.dev/modules/util"
@@ -24,7 +25,48 @@ type RegistrationToken struct {
 	Token string `json:"token"`
 }
 
+// MayRegisterRunner reports whether this Doer may bring a new machine onto the
+// instance at the given scope, and writes the refusal if not.
+//
+// Registering a runner is offering to execute other people's jobs. On an
+// instance with open sign-up that was available to anyone: a user-scoped
+// runner to any account, an organization-scoped one to any organization they
+// could create and own. Neither reached privileged hardware, but both put a
+// machine of the registrant's choosing in the path of somebody else's code and
+// secrets.
+//
+// So: site admins anywhere, and organizations the instance has granted
+// privileged compute -- which is what "a privileged organization" means, since
+// only a site admin can grant it. Everyone else uses the runners the instance
+// provides.
+func MayRegisterRunner(ctx *context.APIContext, ownerID, repoID int64) bool {
+	if ctx.Doer != nil && ctx.Doer.IsAdmin {
+		return true
+	}
+	// A repository-scoped runner belongs to its repository's owner, so the
+	// question is the same one asked a segment higher up.
+	if repoID != 0 && ctx.Repo != nil && ctx.Repo.Repository != nil {
+		ownerID = ctx.Repo.Repository.OwnerID
+	}
+	if ownerID != 0 {
+		privileged, err := organization_model.HasPrivilegedCompute(ctx, ownerID)
+		if err != nil {
+			ctx.APIErrorInternal(err)
+			return false
+		}
+		if privileged {
+			return true
+		}
+	}
+	ctx.APIError(http.StatusForbidden,
+		"registering a runner is reserved to site administrators and to organizations granted privileged compute")
+	return false
+}
+
 func GetRegistrationToken(ctx *context.APIContext, ownerID, repoID int64) {
+	if !MayRegisterRunner(ctx, ownerID, repoID) {
+		return
+	}
 	token, err := actions_model.GetLatestRunnerToken(ctx, ownerID, repoID)
 	if errors.Is(err, util.ErrNotExist) || (token != nil && !token.IsActive) {
 		token, err = actions_model.NewRunnerToken(ctx, ownerID, repoID)
@@ -53,6 +95,17 @@ func ListRunners(ctx *context.APIContext, ownerID, repoID int64) {
 		ListOptions: utils.GetListOptions(ctx),
 	}
 	opts.IsDisabled = ctx.FormOptionalBool("disabled")
+	// `available=true` widens the listing to every runner that could take this
+	// repository's or organization's work, rather than only those registered
+	// at that exact scope.
+	//
+	// Without it a repository listing shows repository-scoped runners alone,
+	// while dispatch also considers the owner's and the instance's. A surface
+	// asking somebody to choose a `runs-on` label from that listing therefore
+	// offers a strict subset of the labels that actually work, and reports the
+	// rest as carried by nothing -- which is how a privileged runner, always
+	// organization-scoped, became invisible to the form meant to target it.
+	opts.WithAvailable = ctx.FormBool("available")
 	runners, total, err := db.FindAndCount[actions_model.ActionRunner](ctx, opts)
 	if err != nil {
 		ctx.APIErrorInternal(err)
@@ -132,14 +185,39 @@ func UpdateRunner(ctx *context.APIContext, ownerID, repoID, runnerID int64) {
 	}
 
 	form := web.GetForm[*api.EditActionRunnerOption](ctx)
-	if form.Disabled == nil {
+	if form.Disabled == nil && form.PrivilegedCompute == nil {
 		ctx.APIError(http.StatusUnprocessableEntity, "[Disabled]: Required")
 		return
 	}
 
-	if err := actions_model.SetRunnerDisabled(ctx, runner, *form.Disabled); err != nil {
-		ctx.APIErrorInternal(err)
-		return
+	if form.Disabled != nil {
+		if err := actions_model.SetRunnerDisabled(ctx, runner, *form.Disabled); err != nil {
+			ctx.APIErrorInternal(err)
+			return
+		}
+	}
+
+	// Privileged compute is a site-admin decision, as it is on the web form.
+	// The caller here has already passed the owner check for this runner's
+	// organization, which is not the same thing: an organization owner may say
+	// which of their teams reaches privileged hardware, and only an
+	// administrator may say that a machine is privileged at all.
+	if form.PrivilegedCompute != nil {
+		if !ctx.Doer.IsAdmin {
+			ctx.APIError(http.StatusForbidden, "privileged compute is a site-admin decision")
+			return
+		}
+		marked := runner.PrivilegedCompute != *form.PrivilegedCompute
+		if err := actions_model.SetRunnerPrivilegedCompute(ctx, runner, *form.PrivilegedCompute); err != nil {
+			if errors.Is(err, util.ErrInvalidArgument) {
+				ctx.APIError(http.StatusUnprocessableEntity, err.Error())
+				return
+			}
+			ctx.APIErrorInternal(err)
+			return
+		}
+		if marked {
+		}
 	}
 
 	GetRunner(ctx, ownerID, repoID, runnerID)

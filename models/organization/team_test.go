@@ -317,4 +317,27 @@ func TestTeam_UnitAccessModeEx(t *testing.T) {
 	mode, exist = team.UnitAccessModeEx(t.Context(), unit.TypeActions)
 	assert.False(t, exist)
 	assert.Equal(t, perm.AccessModeNone, mode)
+// An organization is a privileged one when a site admin has granted any of its
+// teams privileged compute. That is what gates registering a runner of its
+// own, and it needs no column: the grant is already admin-only, so asking it
+// of the organization rather than of a person is the same fact.
+func TestHasPrivilegedCompute(t *testing.T) {
+	assert.NoError(t, unittest.PrepareTestDatabase())
+
+	held, err := organization.HasPrivilegedCompute(t.Context(), 3)
+	assert.NoError(t, err)
+	assert.False(t, held, "no fixture team carries the grant")
+
+	_, err = db.GetEngine(t.Context()).Table("team").Where("id = ?", 2).
+		Update(map[string]any{"org_privileged_compute": true})
+	assert.NoError(t, err)
+
+	held, err = organization.HasPrivilegedCompute(t.Context(), 3)
+	assert.NoError(t, err)
+	assert.True(t, held, "a granted team makes its organization a privileged one")
+
+	// And not its neighbours: organization 6 has teams of its own.
+	held, err = organization.HasPrivilegedCompute(t.Context(), 6)
+	assert.NoError(t, err)
+	assert.False(t, held, "the grant does not cross organizations")
 }
