@@ -42,9 +42,12 @@ env:
   GH_REPO: ${{ github.repository }}
   UPSTREAM_REMOTE: https://github.com/go-gitea/gitea.git
   # A repository variable, so following a new release line is a settings
-  # change rather than a commit. Falls back to the line this fork was built
-  # on.
-  UPSTREAM_BRANCH: ${{ inputs.upstream_branch || vars.UPSTREAM_BRANCH || 'release/v1.27' }}
+  # change rather than a commit. Falls back to the line this fork is built on.
+  #
+  # This was release/v1.27 until the v28 port. Upstream stopped patching that
+  # line on 24 September, so the weekly merge would have reported "nothing to
+  # do" every week forever -- which reads as being current and is the opposite.
+  UPSTREAM_BRANCH: ${{ inputs.upstream_branch || vars.UPSTREAM_BRANCH || 'release/v28' }}
   MERGE_BRANCH: upstream-merge
   CONFLICT_LABEL: upstream-conflict
   # A fully green merge goes to main on its own. Set the AUTO_MERGE

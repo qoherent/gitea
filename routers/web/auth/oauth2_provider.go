@@ -323,6 +323,16 @@ func AuthorizeOAuth(ctx *context.Context) {
 		return
 	}
 
+	// Upstream's defaulting, kept: an authorization that names no scope is
+	// asking for what the grant already holds.
+	if grant != nil && form.Scope == "" {
+		form.Scope = grant.Scope
+	}
+	var addedScopes []string
+	if grant != nil {
+		addedScopes, _ = util.DiffSlice(strings.Fields(grant.Scope), strings.Fields(form.Scope))
+	}
+
 	grant, ok := settleFirstPartyGrant(ctx, app, grant, form)
 	if !ok {
 		return
@@ -442,6 +452,8 @@ func GrantApplicationOAuth(ctx *context.Context) {
 			}, form.RedirectURI)
 			return
 		}
+
+		audit.Record(ctx, audit_model.UserOAuth2ApplicationGrant, ctx.Doer, "oauth2_application", app.Name, "granted_scope", form.Scope)
 	} else if !acceptGrantedScope(ctx, grant, form) {
 		return
 	}
