@@ -1,0 +1,264 @@
+# Keep this fork current with upstream, weekly, without anybody remembering to.
+#
+# The fork is a small set of additions on top of an upstream release branch --
+# 64 hand-written lines inside files upstream also has, and the rest in files
+# of its own. That is deliberate, and it is what makes this merge cheap: most
+# weeks it is a fast-forward with nothing to decide.
+#
+# The week it is not, somebody has to look. A conflict opens an issue rather
+# than failing quietly in a tab nobody has open; GitHub mails that to whoever
+# watches the repository, which is the notification without a mail server or
+# its credentials.
+name: Merge upstream
+
+on:
+  schedule:
+    # Mondays, 07:00 UTC. Early enough that a conflict is somebody's Monday
+    # rather than their Friday evening.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      upstream_branch:
+        description: "Upstream branch to merge (defaults to the UPSTREAM_BRANCH variable)"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  UPSTREAM_REMOTE: https://github.com/go-gitea/gitea.git
+  # A repository variable, so following a new release line is a settings
+  # change rather than a commit. Falls back to the line this fork was built
+  # on.
+  UPSTREAM_BRANCH: ${{ inputs.upstream_branch || vars.UPSTREAM_BRANCH || 'release/v1.27' }}
+  MERGE_BRANCH: upstream-merge
+  CONFLICT_LABEL: upstream-conflict
+  # A fully green merge goes to main on its own. Set the AUTO_MERGE
+  # repository variable to `false` to get a pull request every time instead.
+  # Anything short of fully green opens one regardless of this.
+  AUTO_MERGE: ${{ vars.AUTO_MERGE || 'true' }}
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # The whole history: a merge base cannot be found in a shallow clone.
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        id: fetch
+        run: |
+          set -euo pipefail
+          git remote add upstream "$UPSTREAM_REMOTE" 2>/dev/null || true
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+          behind=$(git rev-list --count HEAD..FETCH_HEAD)
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          echo "head=$(git rev-parse --short=10 FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          echo "$behind commit(s) in upstream/$UPSTREAM_BRANCH that main does not have"
+
+      - name: Which release lines upstream publishes
+        # Listed, not judged. Upstream renamed its line from `release/v1.27` to
+        # `release/v28`, so no sort tells you which is newer, and a guess that
+        # cries wolf every Monday is a job people stop reading. A human reads
+        # this when a line they do not recognise appears.
+        run: |
+          set -euo pipefail
+          {
+            echo "### Upstream release lines"
+            echo ""
+            echo "Tracking: \`$UPSTREAM_BRANCH\`"
+            echo ""
+            git ls-remote --heads "$UPSTREAM_REMOTE" 'refs/heads/release/*' |
+              awk '{print "- `" $2 "`"}' | sed 's|refs/heads/||'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Nothing to do
+        if: steps.fetch.outputs.behind == '0'
+        run: echo "main already carries every commit on upstream/$UPSTREAM_BRANCH."
+
+      - name: Merge
+        id: merge
+        if: steps.fetch.outputs.behind != '0'
+        run: |
+          set -uo pipefail
+          git config user.name "qoherent-ci"
+          git config user.email "ci@qoherent.ai"
+          git checkout -B "$MERGE_BRANCH"
+          if git merge --no-edit FETCH_HEAD; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "conflicts<<EOF"
+              git diff --name-only --diff-filter=U
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            git merge --abort
+          fi
+
+      # ---- The merge conflicted: say so where somebody will see it ----------
+      - name: Open or update the conflict issue
+        if: steps.merge.outputs.clean == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+          UPSTREAM_HEAD: ${{ steps.fetch.outputs.head }}
+          BEHIND: ${{ steps.fetch.outputs.behind }}
+        run: |
+          set -euo pipefail
+          title="Upstream merge needs a hand ($UPSTREAM_BRANCH)"
+          body=$(cat <<EOF
+          \`$UPSTREAM_BRANCH\` is **$BEHIND commit(s)** ahead of \`main\` and the merge
+          conflicts. Nothing was pushed; \`main\` is untouched.
+
+          Upstream head: \`$UPSTREAM_HEAD\`
+
+          Conflicting files:
+          \`\`\`
+          $CONFLICTS
+          \`\`\`
+
+          To resolve locally:
+          \`\`\`bash
+          git fetch upstream $UPSTREAM_BRANCH
+          git checkout -b $MERGE_BRANCH main
+          git merge FETCH_HEAD
+          \`\`\`
+
+          This fork's own changes live mostly in files upstream does not have, so a
+          conflict here is usually in one of the few it shares. Worth checking the
+          two capabilities RiaHub depends on survive the resolution:
+          \`PromoteToLFS\` and \`OAuth2Grant.SetScope\`.
+
+          _Opened by the weekly upstream merge. It will comment here rather than
+          open another issue while this one is open._
+          EOF
+          )
+          gh label create "$CONFLICT_LABEL" --color B60205 \
+            --description "The weekly upstream merge needs manual resolution" 2>/dev/null || true
+          existing=$(gh issue list --state open --label "$CONFLICT_LABEL" \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --label "$CONFLICT_LABEL" --body "$body"
+          fi
+          echo "::error::upstream merge conflicts in: $CONFLICTS"
+          exit 1
+
+      # ---- The merge was clean: prove it still builds and still has ours ----
+      - uses: actions/setup-go@v5
+        if: steps.merge.outputs.clean == 'true'
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: The capabilities RiaHub depends on
+        if: steps.merge.outputs.clean == 'true'
+        run: |
+          set -euo pipefail
+          # Searched by package, not by file: these have moved between files
+          # inside this fork before, and a check that names a path fails for
+          # the wrong reason when they move again.
+          grep -rq 'func PromoteToLFS' routers/api/v1/repo/ \
+            || { echo "::error::LFS promotion is gone from routers/api/v1/repo/"; exit 1; }
+          grep -rq 'func (grant \*OAuth2Grant) SetScope' models/auth/ \
+            || { echo "::error::OAuth scope widening is gone from models/auth/"; exit 1; }
+          echo "both present"
+
+      - run: make deps-backend
+        if: steps.merge.outputs.clean == 'true'
+
+      - name: Build
+        if: steps.merge.outputs.clean == 'true'
+        env:
+          TAGS: bindata gogit
+          GOEXPERIMENT:
+        run: make backend
+
+      - name: This fork's own packages
+        if: steps.merge.outputs.clean == 'true'
+        # TZ=UTC because two upstream content tests compare a zoneless
+        # timestamp against time.Local and fail anywhere but UTC.
+        env:
+          TZ: UTC
+        run: |
+          go test -tags 'sqlite sqlite_unlock_notify' -count=1 \
+            ./models/auth/... ./routers/api/v1/repo/... ./services/repository/files/...
+
+      # The gate for anything unattended. A merge that compiles can still
+      # change behaviour, and this branch is what every RiaHub deployment is
+      # built from -- so the whole suite runs, not the three packages this
+      # fork happens to touch. Allowed to fail: a failure means somebody reads
+      # a pull request, not that the week's upstream fixes are dropped.
+      - name: The whole integration suite
+        id: suite
+        if: steps.merge.outputs.clean == 'true'
+        continue-on-error: true
+        timeout-minutes: 50
+        env:
+          GITEA_TEST_DATABASE: sqlite
+          GOTEST_FLAGS: -timeout=40m
+          TAGS: bindata gogit
+          GOEXPERIMENT:
+          TZ: UTC
+        run: make test-integration
+
+      - name: Ship it, or ask somebody
+        if: steps.merge.outputs.clean == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_HEAD: ${{ steps.fetch.outputs.head }}
+          BEHIND: ${{ steps.fetch.outputs.behind }}
+          SUITE: ${{ steps.suite.outcome }}
+        run: |
+          set -euo pipefail
+          summary="Merges **$BEHIND commit(s)** from \`upstream/$UPSTREAM_BRANCH\` (\`$UPSTREAM_HEAD\`)."
+
+          if [ "$SUITE" = "success" ] && [ "$AUTO_MERGE" = "true" ]; then
+            # The first parent is what main was a moment ago, which is the
+            # whole of the undo instruction.
+            previous=$(git rev-parse --short=10 HEAD^1)
+            git push origin "HEAD:main"
+            {
+              echo "### Merged to main"
+              echo ""
+              echo "$summary"
+              echo ""
+              echo "Clean merge, builds, both RiaHub capabilities present, whole"
+              echo "integration suite green."
+              echo ""
+              echo "To undo: \`git push --force-with-lease origin $previous:main\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "main is now $(git rev-parse --short=10 HEAD); it was $previous"
+            exit 0
+          fi
+
+          # Not green, or auto-merge turned off: somebody decides.
+          git push --force-with-lease origin "$MERGE_BRANCH"
+          if [ "$SUITE" = "success" ]; then
+            why="Auto-merge is off (\`AUTO_MERGE\` is not \`true\`), so this is waiting for you."
+          else
+            why="**The integration suite did not pass**, so this was not merged on its own.
+          The merge is clean and it builds; the suite is the part that wants reading."
+          fi
+          body="$summary
+
+          $why
+
+          _Opened by the weekly upstream merge._"
+          existing=$(gh pr list --head "$MERGE_BRANCH" --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --body "$body"
+            echo "updated PR #$existing"
+          else
+            gh pr create --base main --head "$MERGE_BRANCH" \
+              --title "Merge upstream/$UPSTREAM_BRANCH ($UPSTREAM_HEAD)" --body "$body"
+          fi
+          [ "$SUITE" = "success" ] || exit 1
