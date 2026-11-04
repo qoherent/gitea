@@ -1,0 +1,28 @@
+{
+  "event_id": "8f1d4c2e-6b3a-4e5f-9a7c-2d8b1e0f3a64",
+  "kind": "repository_pushed",
+  "repository_id": 5,
+  "owner": "ben",
+  "name": "lfs-test",
+  "ref": "refs/heads/main",
+  "commit_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "paths": [
+    {
+      "path": "data/one.npy",
+      "change": "added",
+      "is_lfs": true,
+      "lfs_oid": "b0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde",
+      "lfs_size": 4096
+    },
+    {
+      "path": "notes/README.md",
+      "change": "modified",
+      "is_lfs": false
+    },
+    {
+      "path": "old/gone.sigmf-data",
+      "change": "removed",
+      "is_lfs": false
+    }
+  ]
+}

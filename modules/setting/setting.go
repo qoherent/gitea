@@ -138,6 +138,7 @@ func loadCommonSettingsFrom(cfg ConfigProvider) error {
 		return err
 	}
 	loadTimeFrom(cfg)
+	loadRiaHubFrom(cfg)
 	loadRepositoryFrom(cfg)
 	if err := loadAvatarsFrom(cfg); err != nil {
 		return err

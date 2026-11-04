@@ -51,6 +51,7 @@ import (
 	release_service "gitea.dev/services/release"
 	repo_service "gitea.dev/services/repository"
 	"gitea.dev/services/repository/archiver"
+	riahub_service "gitea.dev/services/riahub"
 	"gitea.dev/services/task"
 	"gitea.dev/services/uinotification"
 	"gitea.dev/services/webhook"
@@ -152,6 +153,7 @@ func InitWebInstalled(ctx context.Context) {
 
 	mirror_service.InitSyncMirrors()
 	mustInit(webhook.Init)
+	mustInit(riahub_service.Init)
 	mustInit(pull_service.Init)
 	mustInitCtx(ctx, automerge.Init)
 	mustInit(task.Init)

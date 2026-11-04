@@ -23,6 +23,7 @@ import (
 	gitea_context "gitea.dev/services/context"
 	pull_service "gitea.dev/services/pull"
 	repo_service "gitea.dev/services/repository"
+	riahub_service "gitea.dev/services/riahub"
 )
 
 func hookPostReceiveCollectPushUpdates(opts *private.HookOptions, repo *repo_model.Repository) []*repo_module.PushUpdateOptions {
@@ -109,6 +110,12 @@ func HookPostReceive(ctx *gitea_context.PrivateContext) {
 	if err := repo_service.PushUpdates(updates...); err != nil {
 		log.Error("failed to push updates: %v", err)
 	}
+
+	// Tell RIA Hub what changed, so it can catalog it. Queued, so this
+	// returns at once: the pre-refactor fork classified here instead, and
+	// polled for the answer for up to fifteen minutes with the client's
+	// push held open.
+	riahub_service.NotifyPush(ctx, repo, updates)
 
 	hookPostReceiveRespondWithTrailer(ctx, opts, repo)
 }
