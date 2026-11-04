@@ -5,6 +5,7 @@ package riahub
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -255,4 +256,52 @@ func TestOutcomeOfTellsARefusalFromAPause(t *testing.T) {
 	} {
 		assert.Equal(t, want, outcomeOf(status), "status %d", status)
 	}
+}
+
+func TestAQueuedJobReadsWhatThePreviousBuildWrote(t *testing.T) {
+	// The queue persists its items, so an upgrade meets whatever the build
+	// before it left there. This changed the queued type from the wire
+	// Event to a job, and without matching tags every pending report would
+	// have decoded into an empty struct: a push whose repository id is 0
+	// fails its lookup and is dropped, and a deletion is sent naming no
+	// repository at all.
+	saved := []byte(`{
+		"event_id": "8f1d4c2e-6b3a-4e5f-9a7c-2d8b1e0f3a64",
+		"kind": "repository_pushed",
+		"repository_id": 5,
+		"owner": "ben",
+		"name": "lfs-test",
+		"ref": "refs/heads/main",
+		"commit_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+		"paths": [{"path": "data/one.npy", "change": "added", "is_lfs": true}]
+	}`)
+
+	var item job
+	require.NoError(t, json.Unmarshal(saved, &item))
+
+	assert.Equal(t, "8f1d4c2e-6b3a-4e5f-9a7c-2d8b1e0f3a64", item.EventID)
+	assert.Equal(t, KindPushed, item.Kind)
+	assert.Equal(t, int64(5), item.RepositoryID)
+	assert.Equal(t, "ben", item.Owner)
+	assert.Equal(t, "lfs-test", item.Name)
+	assert.Equal(t, "refs/heads/main", item.Ref)
+	assert.Equal(t, "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", item.NewCommitID)
+	// Absent, which is the "this ref is new" case: the whole tree is
+	// reported as additions and the catalogue upserts it. Over-reporting a
+	// pending item once beats discarding it.
+	assert.Empty(t, item.OldCommitID)
+}
+
+func TestAQueuedJobSurvivesItsOwnRoundTrip(t *testing.T) {
+	item := job{
+		EventID: "x", Kind: KindPushed, RepositoryID: 7, Owner: "o", Name: "n",
+		Ref: "refs/heads/main", OldCommitID: "aaa", NewCommitID: "bbb",
+	}
+
+	encoded, err := json.Marshal(item)
+	require.NoError(t, err)
+	var back job
+	require.NoError(t, json.Unmarshal(encoded, &back))
+
+	assert.Equal(t, item, back)
 }

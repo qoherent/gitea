@@ -48,15 +48,23 @@ const (
 // import is thousands of git invocations, and the post-receive hook waits
 // for all of them. "Queued, so the push returns at once" was only true of
 // the HTTP call.
+// The tags matter: the queue persists its items, so an upgrade meets
+// whatever the previous build wrote. These are the names the Event this
+// replaced marshalled under, and `commit_sha` lands on NewCommitID, so a
+// report saved by the old build decodes into a usable job rather than an
+// empty one -- it loses only `old_commit_id`, which is absent, and an
+// absent old commit is already the "this ref is new" case: the whole tree
+// is reported as additions, which the catalogue upserts. Over-reporting a
+// pending item once beats discarding it.
 type job struct {
-	EventID      string
-	Kind         string
-	RepositoryID int64
-	Owner        string
-	Name         string
-	Ref          string
-	OldCommitID  string
-	NewCommitID  string
+	EventID      string `json:"event_id"`
+	Kind         string `json:"kind"`
+	RepositoryID int64  `json:"repository_id"`
+	Owner        string `json:"owner"`
+	Name         string `json:"name"`
+	Ref          string `json:"ref,omitempty"`
+	OldCommitID  string `json:"old_commit_id,omitempty"`
+	NewCommitID  string `json:"commit_sha,omitempty"`
 }
 
 var eventQueue *queue.WorkerPoolQueue[*job]
@@ -90,9 +98,16 @@ func handler(items ...*job) []*job {
 	for _, item := range items {
 		event, err := describe(item)
 		if err != nil {
-			// The repository is gone, or git refused. Neither is mended by
-			// asking again with the same commit ids.
-			log.Error("riahub: could not describe %s for repository %d: %v", item.Kind, item.RepositoryID, err)
+			// Only an absent repository is permanent. Everything else --
+			// a database that is briefly unreachable, a read cancelled by
+			// shutdown -- is mended by asking again, and dropping it here
+			// loses a report that was already waiting to be retried.
+			if repo_model.IsErrRepoNotExist(err) {
+				log.Error("riahub: repository %d is gone; dropping its %s", item.RepositoryID, item.Kind)
+				continue
+			}
+			log.Error("riahub: could not describe %s for repository %d, will retry: %v", item.Kind, item.RepositoryID, err)
+			unhandled = append(unhandled, item)
 			continue
 		}
 		if event == nil {
