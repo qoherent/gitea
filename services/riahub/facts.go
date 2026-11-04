@@ -17,6 +17,7 @@ package riahub
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"gitea.dev/modules/git/gitcmd"
@@ -54,12 +55,21 @@ type PathFact struct {
 // no longer exists. Split into a removal and an addition it stays correct
 // with no rename handling on either side.
 func changedPaths(ctx context.Context, repo gitrepo.RepositoryFacade, oldCommitID, newCommitID string) ([]PathFact, error) {
-	cmd := gitcmd.NewCommand("diff", "--name-status", "--no-renames", "-z")
+	// diff-tree, not diff. A repository on the server is bare, and `git diff`
+	// given a single commit compares it against a work tree, so the form this
+	// needs for a new branch died with "fatal: this operation must be run in a
+	// work tree" and the push that created the branch reported nothing at all.
+	// diff-tree is the plumbing for comparing trees and never looks for one.
+	//
+	// -r to recurse, or only the top-level entry of a changed directory is
+	// named. --no-commit-id because the single-commit form otherwise writes the
+	// commit's own id ahead of the first record, where the parser would read it
+	// as a status field.
+	cmd := gitcmd.NewCommand("diff-tree", "-r", "--no-commit-id", "--name-status", "--no-renames", "-z")
 	if isEmptyCommit(oldCommitID) {
-		// A new branch: everything it carries is an addition. `--root` makes
-		// git diff the first commit against the empty tree rather than
-		// refusing, which is what made a push that created a branch report
-		// nothing at all.
+		// A new branch: everything it carries is an addition. `--root` is what
+		// makes the first commit diff against the empty tree rather than
+		// against nothing.
 		cmd.AddArguments("--root")
 		cmd.AddDynamicArguments(newCommitID)
 	} else {
@@ -114,10 +124,7 @@ const pointerCeiling = 1024
 
 // resolveLFS fills in the LFS facts for every path still present.
 func resolveLFS(ctx context.Context, repo gitrepo.RepositoryFacade, commitID string, facts []PathFact) {
-	for i := range facts {
-		if facts[i].Change == Removed {
-			continue
-		}
+	for _, i := range pointerSized(ctx, repo, commitID, facts) {
 		pointer, ok := readPointer(ctx, repo, commitID, facts[i].Path)
 		if !ok {
 			continue
@@ -126,6 +133,73 @@ func resolveLFS(ctx context.Context, repo gitrepo.RepositoryFacade, commitID str
 		facts[i].LfsOid = pointer.Oid
 		facts[i].LfsSize = pointer.Size
 	}
+}
+
+// pointerSized returns the indexes of the present paths whose blob is small
+// enough to be a pointer, asking git for every size in one invocation.
+//
+// The size has to be known before the blob is read. Reading first and
+// measuring after means every binary a push adds is pulled through this
+// process to discover it is not a pointer, so a single recording committed
+// without LFS -- exactly the case the LFS advisory exists to catch -- is read
+// into Gitea's memory whole.
+func pointerSized(ctx context.Context, repo gitrepo.RepositoryFacade, commitID string, facts []PathFact) []int {
+	present := make([]int, 0, len(facts))
+	query := make([]byte, 0, len(facts)*64)
+	for i := range facts {
+		// A removed path has nothing to read at this commit.
+		if facts[i].Change == Removed {
+			continue
+		}
+		// The query is newline-delimited, so a path holding one would be read
+		// as two and every record after it would be matched to the wrong
+		// path. `--batch-check -z` is the answer and arrived in git 2.47,
+		// which is newer than this fork requires. Such a path is catalogued
+		// by name like any other; only its LFS facts are lost.
+		if strings.ContainsRune(facts[i].Path, '\n') {
+			continue
+		}
+		present = append(present, i)
+		query = append(query, commitID...)
+		query = append(query, ':')
+		query = append(query, facts[i].Path...)
+		query = append(query, '\n')
+	}
+	if len(present) == 0 {
+		return nil
+	}
+
+	stdout, _, runErr := gitcmd.NewCommand("cat-file", "--batch-check").
+		WithStdinBytes(query).
+		WithRepo(repo).
+		RunStdString(ctx)
+	if runErr != nil {
+		// No LFS facts for this push rather than an unbounded read: the API
+		// still catalogs every path by name, which is the common case anyway.
+		log.Debug("riahub: could not size the paths changed at %s: %v", commitID, runErr)
+		return nil
+	}
+
+	// One record per query, in order, so they are matched by position: a
+	// missing object answers with the query echoed back, which holds the
+	// path and cannot be parsed as a field.
+	records := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	small := make([]int, 0, len(present))
+	for at, record := range records {
+		if at >= len(present) {
+			break
+		}
+		fields := strings.Fields(record)
+		if len(fields) != 3 || fields[1] != "blob" {
+			continue
+		}
+		size, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil || size > pointerCeiling {
+			continue
+		}
+		small = append(small, present[at])
+	}
+	return small
 }
 
 func readPointer(ctx context.Context, repo gitrepo.RepositoryFacade, commitID, path string) (lfs.Pointer, bool) {
