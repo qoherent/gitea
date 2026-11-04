@@ -65,21 +65,46 @@ func changedPaths(ctx context.Context, repo gitrepo.RepositoryFacade, oldCommitI
 	// named. --no-commit-id because the single-commit form otherwise writes the
 	// commit's own id ahead of the first record, where the parser would read it
 	// as a status field.
-	cmd := gitcmd.NewCommand("diff-tree", "-r", "--no-commit-id", "--name-status", "--no-renames", "-z")
 	if isEmptyCommit(oldCommitID) {
-		// A new branch: everything it carries is an addition. `--root` is what
-		// makes the first commit diff against the empty tree rather than
-		// against nothing.
-		cmd.AddArguments("--root")
-		cmd.AddDynamicArguments(newCommitID)
-	} else {
-		cmd.AddDynamicArguments(oldCommitID, newCommitID)
+		return wholeTree(ctx, repo, newCommitID)
 	}
+	cmd := gitcmd.NewCommand("diff-tree", "-r", "--no-commit-id", "--name-status", "--no-renames", "-z").
+		AddDynamicArguments(oldCommitID, newCommitID)
 	stdout, _, runErr := cmd.WithRepo(repo).RunStdString(ctx)
 	if runErr != nil {
 		return nil, runErr
 	}
 	return parseNameStatus(stdout), nil
+}
+
+// wholeTree lists everything a ref carries, as additions.
+//
+// What a push with no old commit means: this ref is new here, and nothing
+// has been said about any path on it. `diff-tree --root <tip>` is not that
+// -- it only diffs against the empty tree when the tip is a root commit, and
+// against the tip's parent whenever it has one, so a first push carrying
+// three commits reported what the third changed and the first two were never
+// catalogued at all.
+//
+// ls-tree rather than a diff against the empty tree object, whose id depends
+// on whether the repository hashes with SHA-1 or SHA-256.
+func wholeTree(ctx context.Context, repo gitrepo.RepositoryFacade, commitID string) ([]PathFact, error) {
+	stdout, _, runErr := gitcmd.NewCommand("ls-tree", "-r", "-z", "--name-only").
+		AddDynamicArguments(commitID).
+		WithRepo(repo).
+		RunStdString(ctx)
+	if runErr != nil {
+		return nil, runErr
+	}
+	paths := strings.Split(stdout, "\x00")
+	facts := make([]PathFact, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		facts = append(facts, PathFact{Path: path, Change: Added})
+	}
+	return facts, nil
 }
 
 func isEmptyCommit(id string) bool {

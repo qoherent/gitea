@@ -200,3 +200,59 @@ func TestPointerSizedAsksForNothingWhenEveryPathIsRemoved(t *testing.T) {
 
 	assert.Empty(t, pointerSized(context.Background(), repo, head, facts))
 }
+
+func TestChangedPathsReportsEveryCommitOfAFirstPushNotJustTheTip(t *testing.T) {
+	// A branch is pushed whole, not commit by commit, and the hook is given
+	// one range for the lot. `diff-tree --root <tip>` diffs the tip against
+	// its parent whenever it has one, so a first push carrying three commits
+	// reported only what the third changed and the rest were never
+	// catalogued. The earlier test passed because its first push was one
+	// commit, where tip and root are the same thing.
+	work, bare := t.TempDir(), filepath.Join(t.TempDir(), "repo.git")
+	run(t, work, "init", "-q", "-b", "main")
+	write(t, work, "first/early.npy", samplePointer)
+	run(t, work, "add", "-A")
+	run(t, work, "commit", "-q", "-m", "one")
+	write(t, work, "second/middle.npy", "not a pointer\n")
+	run(t, work, "add", "-A")
+	run(t, work, "commit", "-q", "-m", "two")
+	write(t, work, "third/late.py", "import torch\n")
+	run(t, work, "add", "-A")
+	run(t, work, "commit", "-q", "-m", "three")
+	tip := run(t, work, "rev-parse", "HEAD")
+	run(t, work, "clone", "--bare", "-q", work, bare)
+
+	facts, err := changedPaths(context.Background(), bareRepo(bare), "", tip)
+
+	require.NoError(t, err)
+	named := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		assert.Equal(t, Added, fact.Change, "everything a new branch carries is an addition")
+		named = append(named, fact.Path)
+	}
+	assert.ElementsMatch(t, []string{"first/early.npy", "second/middle.npy", "third/late.py"}, named)
+}
+
+func TestOutcomeOfTellsARefusalFromAPause(t *testing.T) {
+	// A blanket "4xx means dropped" loses a report to a rate limiter or a
+	// proxy's timeout, and the catalogue is then permanently missing what
+	// that push changed with nothing anywhere saying so.
+	for status, want := range map[int]outcome{
+		200: delivered,
+		202: delivered,
+		204: delivered,
+		400: refused,
+		401: refused,
+		403: refused,
+		404: refused,
+		413: refused,
+		422: refused,
+		408: retryable,
+		429: retryable,
+		500: retryable,
+		502: retryable,
+		503: retryable,
+	} {
+		assert.Equal(t, want, outcomeOf(status), "status %d", status)
+	}
+}

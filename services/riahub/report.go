@@ -40,7 +40,26 @@ const (
 	KindDeleted = "repository_deleted"
 )
 
-var eventQueue *queue.WorkerPoolQueue[*Event]
+// job is what the queue carries: where to look, not what was found.
+//
+// The facts are gathered in the worker rather than before the push returns.
+// Gathering them means one `ls-tree` or `diff-tree` and a `cat-file` for
+// every changed blob small enough to be an LFS pointer -- which on a large
+// import is thousands of git invocations, and the post-receive hook waits
+// for all of them. "Queued, so the push returns at once" was only true of
+// the HTTP call.
+type job struct {
+	EventID      string
+	Kind         string
+	RepositoryID int64
+	Owner        string
+	Name         string
+	Ref          string
+	OldCommitID  string
+	NewCommitID  string
+}
+
+var eventQueue *queue.WorkerPoolQueue[*job]
 
 // Init starts the queue that carries events to the API.
 //
@@ -66,15 +85,57 @@ func Init() error {
 	return nil
 }
 
-func handler(items ...*Event) []*Event {
-	var unhandled []*Event
-	for _, event := range items {
+func handler(items ...*job) []*job {
+	var unhandled []*job
+	for _, item := range items {
+		event, err := describe(item)
+		if err != nil {
+			// The repository is gone, or git refused. Neither is mended by
+			// asking again with the same commit ids.
+			log.Error("riahub: could not describe %s for repository %d: %v", item.Kind, item.RepositoryID, err)
+			continue
+		}
+		if event == nil {
+			continue
+		}
 		if err := send(event); err != nil {
-			log.Error("riahub: reporting %s for repository %d failed, will retry: %v", event.Kind, event.RepositoryID, err)
-			unhandled = append(unhandled, event)
+			log.Error("riahub: reporting %s for repository %d failed, will retry: %v", item.Kind, item.RepositoryID, err)
+			unhandled = append(unhandled, item)
 		}
 	}
 	return unhandled
+}
+
+// describe turns a queued range into the event the API is sent, reading the
+// repository as it is now. A nil event means there is nothing to report.
+func describe(item *job) (*Event, error) {
+	event := &Event{
+		EventID:      item.EventID,
+		Kind:         item.Kind,
+		RepositoryID: item.RepositoryID,
+		Owner:        item.Owner,
+		Name:         item.Name,
+		Ref:          item.Ref,
+		CommitSHA:    item.NewCommitID,
+	}
+	if item.Kind != KindPushed {
+		return event, nil
+	}
+	ctx := graceful.GetManager().ShutdownContext()
+	repo, err := repo_model.GetRepositoryByID(ctx, item.RepositoryID)
+	if err != nil {
+		return nil, err
+	}
+	facts, err := changedPaths(ctx, repo, item.OldCommitID, item.NewCommitID)
+	if err != nil {
+		return nil, err
+	}
+	if len(facts) == 0 {
+		return nil, nil
+	}
+	resolveLFS(ctx, repo, item.NewCommitID, facts)
+	event.Paths = facts
+	return event, nil
 }
 
 func send(event *Event) error {
@@ -103,14 +164,10 @@ func send(event *Event) error {
 		return err
 	}
 	defer response.Body.Close()
-	switch {
-	case response.StatusCode == http.StatusAccepted, response.StatusCode == http.StatusOK:
+	switch outcomeOf(response.StatusCode) {
+	case delivered:
 		return nil
-	case response.StatusCode == http.StatusNoContent:
-		return nil
-	case response.StatusCode >= 400 && response.StatusCode < 500:
-		// The API understood and refused. Retrying an unauthorised or
-		// malformed report just repeats it; said once, loudly, and dropped.
+	case refused:
 		log.Error("riahub: the API refused %s for repository %d with %d; not retrying",
 			event.Kind, event.RepositoryID, response.StatusCode)
 		return nil
@@ -119,19 +176,54 @@ func send(event *Event) error {
 	}
 }
 
-func enqueue(event *Event) {
-	if eventQueue == nil {
-		return
-	}
-	event.EventID = uuid.NewString()
-	if err := eventQueue.Push(event); err != nil {
-		log.Error("riahub: could not queue %s for repository %d: %v", event.Kind, event.RepositoryID, err)
+type outcome int
+
+const (
+	delivered outcome = iota
+	// refused: the API understood and will not take it. Retrying an
+	// unauthorised or malformed report just repeats it.
+	refused
+	// retryable: not now. Returned to the queue.
+	retryable
+)
+
+// outcomeOf reads a response status as one of three answers.
+//
+// Separated from the call so the rule can be tested without a server. The
+// two that look like refusals and are not cost a catalogue update each: 408
+// is a proxy giving up on a slow request and 429 is a rate limiter, and
+// both are exactly the outage the queue exists to ride out.
+func outcomeOf(status int) outcome {
+	switch {
+	case status == http.StatusOK, status == http.StatusAccepted, status == http.StatusNoContent:
+		return delivered
+	case status == http.StatusRequestTimeout, status == http.StatusTooManyRequests:
+		return retryable
+	case status >= 400 && status < 500:
+		return refused
+	default:
+		return retryable
 	}
 }
 
-// NotifyPush reports what a push changed. Called after the push is complete
-// and never blocks it.
-func NotifyPush(ctx context.Context, repo *repo_model.Repository, updates []*repo_module.PushUpdateOptions) {
+func enqueue(item *job) {
+	if eventQueue == nil {
+		return
+	}
+	// Assigned here rather than at send time, so every retry of this item
+	// carries the id the API already recorded.
+	item.EventID = uuid.NewString()
+	if err := eventQueue.Push(item); err != nil {
+		log.Error("riahub: could not queue %s for repository %d: %v", item.Kind, item.RepositoryID, err)
+	}
+}
+
+// NotifyPush reports what a push changed.
+//
+// It queues the range and returns. Nothing here reads the repository: the
+// worker does that, because reading it is one git invocation per changed
+// blob and the post-receive hook is waiting.
+func NotifyPush(_ context.Context, repo *repo_model.Repository, updates []*repo_module.PushUpdateOptions) {
 	if eventQueue == nil || repo == nil {
 		return
 	}
@@ -139,24 +231,14 @@ func NotifyPush(ctx context.Context, repo *repo_model.Repository, updates []*rep
 		if update.IsDelRef() || !update.RefFullName.IsBranch() {
 			continue
 		}
-		facts, err := changedPaths(ctx, repo, update.OldCommitID, update.NewCommitID)
-		if err != nil {
-			log.Error("riahub: could not list what %s changed in repository %d: %v",
-				update.NewCommitID, repo.ID, err)
-			continue
-		}
-		if len(facts) == 0 {
-			continue
-		}
-		resolveLFS(ctx, repo, update.NewCommitID, facts)
-		enqueue(&Event{
+		enqueue(&job{
 			Kind:         KindPushed,
 			RepositoryID: repo.ID,
 			Owner:        repo.OwnerName,
 			Name:         repo.Name,
 			Ref:          update.RefFullName.String(),
-			CommitSHA:    update.NewCommitID,
-			Paths:        facts,
+			OldCommitID:  update.OldCommitID,
+			NewCommitID:  update.NewCommitID,
 		})
 	}
 }
@@ -167,7 +249,7 @@ func NotifyRepositoryDeleted(repo *repo_model.Repository) {
 	if eventQueue == nil || repo == nil {
 		return
 	}
-	enqueue(&Event{
+	enqueue(&job{
 		Kind:         KindDeleted,
 		RepositoryID: repo.ID,
 		Owner:        repo.OwnerName,
