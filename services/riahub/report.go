@@ -65,6 +65,30 @@ type job struct {
 	Ref          string `json:"ref,omitempty"`
 	OldCommitID  string `json:"old_commit_id,omitempty"`
 	NewCommitID  string `json:"commit_sha,omitempty"`
+	// Attempts counts the deliveries that failed before the report could
+	// even be described. See giveUp.
+	Attempts int `json:"attempts,omitempty"`
+}
+
+// maxDescribeAttempts bounds how long a report that cannot be read is kept.
+//
+// Returning every failure to the queue is right for a database that is
+// briefly unreachable and wrong for a commit that no longer exists -- after
+// a force-push and a prune, `changedPaths` can never read it, and the queue
+// would repeat the same git command about once a second, for ever, against
+// reports that could still succeed. Enumerating the permanent git errors is
+// a game of whack-a-mole; counting is not.
+const maxDescribeAttempts = 10
+
+// giveUp says whether a report that could not be described should be
+// dropped rather than returned to the queue. It increments the attempt
+// count as a side effect, which is carried with the item.
+func giveUp(item *job, err error) bool {
+	if repo_model.IsErrRepoNotExist(err) {
+		return true
+	}
+	item.Attempts++
+	return item.Attempts >= maxDescribeAttempts
 }
 
 var eventQueue *queue.WorkerPoolQueue[*job]
@@ -98,12 +122,9 @@ func handler(items ...*job) []*job {
 	for _, item := range items {
 		event, err := describe(item)
 		if err != nil {
-			// Only an absent repository is permanent. Everything else --
-			// a database that is briefly unreachable, a read cancelled by
-			// shutdown -- is mended by asking again, and dropping it here
-			// loses a report that was already waiting to be retried.
-			if repo_model.IsErrRepoNotExist(err) {
-				log.Error("riahub: repository %d is gone; dropping its %s", item.RepositoryID, item.Kind)
+			if giveUp(item, err) {
+				log.Error("riahub: giving up on %s for repository %d after %d attempts: %v",
+					item.Kind, item.RepositoryID, item.Attempts, err)
 				continue
 			}
 			log.Error("riahub: could not describe %s for repository %d, will retry: %v", item.Kind, item.RepositoryID, err)

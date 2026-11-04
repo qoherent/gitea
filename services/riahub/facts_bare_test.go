@@ -6,12 +6,14 @@ package riahub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	repo_model "gitea.dev/models/repo"
 	"gitea.dev/modules/git"
 	"gitea.dev/modules/setting"
 
@@ -304,4 +306,41 @@ func TestAQueuedJobSurvivesItsOwnRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(encoded, &back))
 
 	assert.Equal(t, item, back)
+}
+
+func TestGiveUpKeepsRetryingButNotForever(t *testing.T) {
+	// Returning every failure to the queue is right for a database that is
+	// briefly unreachable and wrong for a commit that no longer exists:
+	// after a force-push and a prune, nothing can ever read it, and the
+	// queue would repeat the same git command about once a second against
+	// reports that could still succeed. Enumerating the permanent git
+	// errors is whack-a-mole; counting is not.
+	item := &job{Kind: KindPushed, RepositoryID: 1}
+	transient := errors.New("database is starting up")
+
+	for attempt := 1; attempt < maxDescribeAttempts; attempt++ {
+		assert.False(t, giveUp(item, transient), "attempt %d", attempt)
+	}
+	assert.True(t, giveUp(item, transient), "the last attempt is the last")
+	assert.Equal(t, maxDescribeAttempts, item.Attempts)
+}
+
+func TestGiveUpDropsAVanishedRepositoryAtOnce(t *testing.T) {
+	// Nine more attempts at a repository that no longer exists buys
+	// nothing, and the answer is already certain.
+	item := &job{Kind: KindDeleted, RepositoryID: 1}
+
+	assert.True(t, giveUp(item, repo_model.ErrRepoNotExist{ID: 1}))
+	assert.Zero(t, item.Attempts)
+}
+
+func TestAnAttemptCountSurvivesTheQueue(t *testing.T) {
+	// The count is only a bound if it is carried with the item: the queue
+	// marshals what the handler hands back.
+	encoded, err := json.Marshal(&job{Kind: KindPushed, RepositoryID: 1, Attempts: 4})
+	require.NoError(t, err)
+	var back job
+	require.NoError(t, json.Unmarshal(encoded, &back))
+
+	assert.Equal(t, 4, back.Attempts)
 }
