@@ -4,13 +4,10 @@
 package actions
 
 import (
-	"archive/zip"
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
 	"html/template"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -29,11 +26,9 @@ import (
 	"gitea.dev/modules/base"
 	"gitea.dev/modules/cache"
 	"gitea.dev/modules/git"
-	"gitea.dev/modules/httplib"
 	"gitea.dev/modules/json"
 	"gitea.dev/modules/log"
 	"gitea.dev/modules/optional"
-	"gitea.dev/modules/storage"
 	api "gitea.dev/modules/structs"
 	"gitea.dev/modules/templates"
 	"gitea.dev/modules/translation"
@@ -1258,44 +1253,10 @@ func ArtifactsDownloadView(ctx *context_module.Context) {
 	}
 
 	// Artifacts using the v1-v3 backend are stored as multiple individual files per artifact on the backend
-	// Those need to be zipped for download
-	ctx.Resp.Header().Set("Content-Disposition", httplib.EncodeContentDispositionAttachment(artifactName+".zip"))
-	zipWriter := zip.NewWriter(ctx.Resp)
-	defer zipWriter.Close()
-
-	writeArtifactToZip := func(art *actions_model.ActionArtifact) error {
-		f, err := storage.ActionsArtifacts.Open(art.StoragePath)
-		if err != nil {
-			return fmt.Errorf("ActionsArtifacts.Open: %w", err)
-		}
-		defer f.Close()
-
-		var r io.ReadCloser = f
-		if art.ContentEncodingOrType == actions_model.ContentEncodingV3Gzip {
-			r, err = gzip.NewReader(f)
-			if err != nil {
-				return fmt.Errorf("gzip.NewReader: %w", err)
-			}
-		}
-		defer r.Close()
-
-		w, err := zipWriter.Create(art.ArtifactPath)
-		if err != nil {
-			return fmt.Errorf("zipWriter.Create: %w", err)
-		}
-		_, err = io.Copy(w, r)
-		if err != nil {
-			return fmt.Errorf("io.Copy: %w", err)
-		}
-		return nil
-	}
-
-	for _, art := range artifacts {
-		err := writeArtifactToZip(art)
-		if err != nil {
-			ctx.ServerError("writeArtifactToZip", err)
-			return
-		}
+	// Those need to be zipped for download. Shared with the API, which
+	// serves the same group through its own signed endpoint.
+	if err := actions_service.DownloadArtifactV3(ctx.Resp, artifactName, artifacts); err != nil {
+		ctx.ServerError("DownloadArtifactV3", err)
 	}
 }
 

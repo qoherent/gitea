@@ -4,6 +4,10 @@
 package actions
 
 import (
+	"archive/zip"
+	"compress/gzip"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -62,4 +66,50 @@ func DownloadArtifactV4(ctx *context.Base, art *actions_model.ActionArtifact) er
 		return nil
 	}
 	return DownloadArtifactV4ReadStorage(ctx, art)
+}
+
+// DownloadArtifactV3 writes a v1-v3 artifact to the response as a zip.
+//
+// The old backend stores one file per row, so an artifact is the group of
+// rows sharing a run, an attempt and a name, and downloading one means
+// zipping them. Shared by the web view and the API rather than written
+// twice: the API refused these outright, so a client could see an artifact
+// listed and never fetch it.
+func DownloadArtifactV3(w http.ResponseWriter, artifactName string, artifacts []*actions_model.ActionArtifact) error {
+	w.Header().Set("Content-Disposition", httplib.EncodeContentDispositionAttachment(artifactName+".zip"))
+	zipWriter := zip.NewWriter(w)
+	defer zipWriter.Close()
+
+	for _, art := range artifacts {
+		if err := writeArtifactToZip(zipWriter, art); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeArtifactToZip(zipWriter *zip.Writer, art *actions_model.ActionArtifact) error {
+	f, err := storage.ActionsArtifacts.Open(art.StoragePath)
+	if err != nil {
+		return fmt.Errorf("ActionsArtifacts.Open: %w", err)
+	}
+	defer f.Close()
+
+	var r io.ReadCloser = f
+	if art.ContentEncodingOrType == actions_model.ContentEncodingV3Gzip {
+		r, err = gzip.NewReader(f)
+		if err != nil {
+			return fmt.Errorf("gzip.NewReader: %w", err)
+		}
+	}
+	defer r.Close()
+
+	dest, err := zipWriter.Create(art.ArtifactPath)
+	if err != nil {
+		return fmt.Errorf("zipWriter.Create: %w", err)
+	}
+	if _, err = io.Copy(dest, r); err != nil {
+		return fmt.Errorf("io.Copy: %w", err)
+	}
+	return nil
 }
