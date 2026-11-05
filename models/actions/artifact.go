@@ -160,6 +160,12 @@ type FindArtifactsOptions struct {
 	ArtifactName         string
 	Status               ArtifactStatus
 	FinalizedArtifactsV4 bool
+	// FinalizedArtifacts selects every artifact a run finished uploading,
+	// whichever protocol uploaded it. FinalizedArtifactsV4 additionally
+	// requires the content_encoding of a v4 upload, which the v4 protocol
+	// endpoints need and a listing does not: a v3 upload leaves that field
+	// empty, so it answered no artifacts for runs that plainly had them.
+	FinalizedArtifacts bool
 }
 
 func (opts FindArtifactsOptions) ToOrders() string {
@@ -189,6 +195,9 @@ func (opts FindArtifactsOptions) ToConds() builder.Cond {
 		cond = cond.And(builder.Eq{"status": ArtifactStatusUploadConfirmed}.Or(builder.Eq{"status": ArtifactStatusExpired}))
 		// see the comment of ActionArtifact.ContentEncodingOrType: "*/*" means the field is a content type
 		cond = cond.And(builder.Like{"content_encoding", "%/%"})
+	}
+	if opts.FinalizedArtifacts {
+		cond = cond.And(builder.Eq{"status": ArtifactStatusUploadConfirmed}.Or(builder.Eq{"status": ArtifactStatusExpired}))
 	}
 
 	return cond

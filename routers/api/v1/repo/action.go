@@ -1819,11 +1819,11 @@ func GetArtifactsOfRun(ctx *context.APIContext) {
 	repoID, runID := ctx.Repo.Repository.ID, ctx.PathParamInt64("run")
 
 	artifacts, total, err := db.FindAndCount[actions_model.ActionArtifact](ctx, actions_model.FindArtifactsOptions{
-		RepoID:               repoID,
-		RunID:                runID,
-		ArtifactName:         artifactName,
-		FinalizedArtifactsV4: true,
-		ListOptions:          utils.GetListOptions(ctx),
+		RepoID:             repoID,
+		RunID:              runID,
+		ArtifactName:       artifactName,
+		FinalizedArtifacts: true,
+		ListOptions:        utils.GetListOptions(ctx),
 	})
 	if err != nil {
 		ctx.APIErrorInternal(err)
@@ -1929,10 +1929,10 @@ func GetArtifacts(ctx *context.APIContext) {
 	artifactName := ctx.Req.URL.Query().Get("name")
 
 	artifacts, total, err := db.FindAndCount[actions_model.ActionArtifact](ctx, actions_model.FindArtifactsOptions{
-		RepoID:               repoID,
-		ArtifactName:         artifactName,
-		FinalizedArtifactsV4: true,
-		ListOptions:          utils.GetListOptions(ctx),
+		RepoID:             repoID,
+		ArtifactName:       artifactName,
+		FinalizedArtifacts: true,
+		ListOptions:        utils.GetListOptions(ctx),
 	})
 	if err != nil {
 		ctx.APIErrorInternal(err)
