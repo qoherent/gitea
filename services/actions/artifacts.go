@@ -78,14 +78,22 @@ func DownloadArtifactV4(ctx *context.Base, art *actions_model.ActionArtifact) er
 func DownloadArtifactV3(w http.ResponseWriter, artifactName string, artifacts []*actions_model.ActionArtifact) error {
 	w.Header().Set("Content-Disposition", httplib.EncodeContentDispositionAttachment(artifactName+".zip"))
 	zipWriter := zip.NewWriter(w)
-	defer zipWriter.Close()
 
 	for _, art := range artifacts {
 		if err := writeArtifactToZip(zipWriter, art); err != nil {
+			// Closed on the way out only when every file was written.
+			// Closing writes the archive's central directory, and that
+			// first write settles the status code -- so a deferred close
+			// turned a failure on the very first file into an empty but
+			// perfectly valid zip, downloaded with a 200, while the
+			// caller's error status arrived too late to be sent. Setting a
+			// header commits nothing, so dropping it here leaves the caller
+			// free to answer however it likes.
+			w.Header().Del("Content-Disposition")
 			return err
 		}
 	}
-	return nil
+	return zipWriter.Close()
 }
 
 func writeArtifactToZip(zipWriter *zip.Writer, art *actions_model.ActionArtifact) error {
