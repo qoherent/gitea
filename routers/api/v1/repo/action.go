@@ -1818,12 +1818,12 @@ func GetArtifactsOfRun(ctx *context.APIContext) {
 	artifactName := ctx.Req.URL.Query().Get("name")
 	repoID, runID := ctx.Repo.Repository.ID, ctx.PathParamInt64("run")
 
-	artifacts, total, err := db.FindAndCount[actions_model.ActionArtifact](ctx, actions_model.FindArtifactsOptions{
-		RepoID:               repoID,
-		RunID:                runID,
-		ArtifactName:         artifactName,
-		FinalizedArtifactsV4: true,
-		ListOptions:          utils.GetListOptions(ctx),
+	artifacts, total, err := actions_model.FindArtifactGroups(ctx, actions_model.FindArtifactsOptions{
+		RepoID:             repoID,
+		RunID:              runID,
+		ArtifactName:       artifactName,
+		FinalizedArtifacts: true,
+		ListOptions:        utils.GetListOptions(ctx),
 	})
 	if err != nil {
 		ctx.APIErrorInternal(err)
@@ -1928,11 +1928,11 @@ func GetArtifacts(ctx *context.APIContext) {
 	repoID := ctx.Repo.Repository.ID
 	artifactName := ctx.Req.URL.Query().Get("name")
 
-	artifacts, total, err := db.FindAndCount[actions_model.ActionArtifact](ctx, actions_model.FindArtifactsOptions{
-		RepoID:               repoID,
-		ArtifactName:         artifactName,
-		FinalizedArtifactsV4: true,
-		ListOptions:          utils.GetListOptions(ctx),
+	artifacts, total, err := actions_model.FindArtifactGroups(ctx, actions_model.FindArtifactsOptions{
+		RepoID:             repoID,
+		ArtifactName:       artifactName,
+		FinalizedArtifacts: true,
+		ListOptions:        utils.GetListOptions(ctx),
 	})
 	if err != nil {
 		ctx.APIErrorInternal(err)
@@ -1991,17 +1991,42 @@ func GetArtifact(ctx *context.APIContext) {
 		return
 	}
 
-	if actions_service.IsArtifactV4(art) {
-		convertedArtifact, err := convert.ToActionArtifact(ctx.Repo.Repository, art)
+	if !actions_service.IsArtifactV4(art) {
+		// One row per file on the old backend, so the size of the artifact
+		// is the size of its group and not of whichever row the id named.
+		group, err := actions_model.GroupOf(ctx, art)
 		if err != nil {
 			ctx.APIErrorInternal(err)
 			return
 		}
-		ctx.JSON(http.StatusOK, convertedArtifact)
+		if len(group) == 0 {
+			ctx.APIErrorNotFound()
+			return
+		}
+		art = groupedArtifact(group)
+	}
+
+	convertedArtifact, err := convert.ToActionArtifact(ctx.Repo.Repository, art)
+	if err != nil {
+		ctx.APIErrorInternal(err)
 		return
 	}
-	// v3 not supported due to not having one unique id
-	ctx.APIError(http.StatusNotFound, "Artifact not found")
+	ctx.JSON(http.StatusOK, convertedArtifact)
+}
+
+// groupedArtifact presents the rows of one v1-v3 upload as the single
+// artifact a caller asked about: the lowest id, which is what the listing
+// hands out and what the preview handler resolves, and the total size.
+func groupedArtifact(group []*actions_model.ActionArtifact) *actions_model.ActionArtifact {
+	grouped := *group[0]
+	grouped.FileSize = 0
+	for _, art := range group {
+		grouped.FileSize += art.FileSize
+		if art.ID < grouped.ID {
+			grouped.ID = art.ID
+		}
+	}
+	return &grouped
 }
 
 // DeleteArtifact Deletes a specific artifact for a workflow run.
@@ -2040,16 +2065,21 @@ func DeleteArtifact(ctx *context.APIContext) {
 		return
 	}
 
-	if actions_service.IsArtifactV4(art) {
-		if err := actions_model.SetArtifactNeedDeleteByID(ctx, art.ID); err != nil {
+	// Every row of it, because on the old backend an artifact is a group of
+	// them: deleting the one the id named would leave the rest listed under
+	// the same name, as most of an artifact.
+	group, err := actions_model.GroupOf(ctx, art)
+	if err != nil {
+		ctx.APIErrorInternal(err)
+		return
+	}
+	for _, part := range group {
+		if err := actions_model.SetArtifactNeedDeleteByID(ctx, part.ID); err != nil {
 			ctx.APIErrorInternal(err)
 			return
 		}
-		ctx.Status(http.StatusNoContent)
-		return
 	}
-	// v3 not supported due to not having one unique id
-	ctx.APIError(http.StatusNotFound, "Artifact not found")
+	ctx.Status(http.StatusNoContent)
 }
 
 func buildSignature(endp string, expires, artifactID int64) []byte {
@@ -2122,8 +2152,13 @@ func DownloadArtifact(ctx *context.APIContext) {
 		ctx.Redirect(redirectURL, http.StatusFound)
 		return
 	}
-	// v3 not supported due to not having one unique id
-	ctx.APIError(http.StatusNotFound, "Artifact not found")
+
+	// The old backend stores one file per row, so there is nothing to serve
+	// directly and nothing to redirect a range request at: the raw endpoint
+	// zips the group. Signed the same way, so the two kinds are downloaded
+	// through one shape.
+	redirectURL := buildSigURL(ctx, buildDownloadRawEndpoint(ctx.Repo.Repository.OwnerName, ctx.Repo.Repository.Name, art.ID), art.ID)
+	ctx.Redirect(redirectURL, http.StatusFound)
 }
 
 // DownloadArtifactRaw Downloads a specific artifact for a workflow run directly.
@@ -2171,8 +2206,24 @@ func DownloadArtifactRaw(ctx *context.APIContext) {
 		}
 		return
 	}
-	// v3 not supported due to not having one unique id
-	ctx.APIError(http.StatusNotFound, "artifact not found")
+	group, err := actions_model.GroupOf(ctx, art)
+	if err != nil {
+		ctx.APIErrorInternal(err)
+		return
+	}
+	if len(group) == 0 {
+		ctx.APIErrorNotFound()
+		return
+	}
+	for _, part := range group {
+		if part.Status != actions_model.ArtifactStatusUploadConfirmed {
+			ctx.APIError(http.StatusNotFound, "artifact not found")
+			return
+		}
+	}
+	if err := actions_service.DownloadArtifactV3(ctx.Resp, art.ArtifactName, group); err != nil {
+		ctx.APIErrorInternal(err)
+	}
 }
 
 // Try to get the artifact by ID and check access

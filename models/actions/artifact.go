@@ -160,6 +160,12 @@ type FindArtifactsOptions struct {
 	ArtifactName         string
 	Status               ArtifactStatus
 	FinalizedArtifactsV4 bool
+	// FinalizedArtifacts selects every artifact a run finished uploading,
+	// whichever protocol uploaded it. FinalizedArtifactsV4 additionally
+	// requires the content_encoding of a v4 upload, which the v4 protocol
+	// endpoints need and a listing does not: a v3 upload leaves that field
+	// empty, so it answered no artifacts for runs that plainly had them.
+	FinalizedArtifacts bool
 }
 
 func (opts FindArtifactsOptions) ToOrders() string {
@@ -189,6 +195,9 @@ func (opts FindArtifactsOptions) ToConds() builder.Cond {
 		cond = cond.And(builder.Eq{"status": ArtifactStatusUploadConfirmed}.Or(builder.Eq{"status": ArtifactStatusExpired}))
 		// see the comment of ActionArtifact.ContentEncodingOrType: "*/*" means the field is a content type
 		cond = cond.And(builder.Like{"content_encoding", "%/%"})
+	}
+	if opts.FinalizedArtifacts {
+		cond = cond.And(builder.Eq{"status": ArtifactStatusUploadConfirmed}.Or(builder.Eq{"status": ArtifactStatusExpired}))
 	}
 
 	return cond
@@ -224,6 +233,48 @@ type ActionArtifactMeta struct {
 	FileSize     int64
 	Status       ArtifactStatus
 	ExpiredUnix  timeutil.TimeStamp
+}
+
+// artifactGroupKey is what makes one artifact out of several rows. A v4
+// upload is already one row; a v1-v3 upload is one row per file, which is
+// what the "not having one unique id" comments elsewhere in this package
+// are about.
+const artifactGroupKey = "repo_id, run_id, run_attempt_id, artifact_name, commit_sha"
+
+// artifactGroupColumns aggregates a group back into one artifact. The id is
+// the lowest in the group, the same representative ActionArtifactMeta uses
+// and the preview handler resolves; the size is the group's total, because a
+// caller asking how large an artifact is means the thing it downloads.
+const artifactGroupColumns = "min(id) AS id, repo_id, run_id, run_attempt_id, artifact_name, commit_sha, " +
+	"sum(file_size) AS file_size, max(status) AS status, " +
+	"min(created_unix) AS created_unix, max(updated_unix) AS updated_unix, max(expired_unix) AS expired_unix"
+
+// FindArtifactGroups returns one artifact per upload rather than one per
+// stored row, so a v1-v3 artifact of three files is one entry of their total
+// size instead of three same-named entries of a third each.
+func FindArtifactGroups(ctx context.Context, opts FindArtifactsOptions) ([]*ActionArtifact, int64, error) {
+	count, err := db.GetEngine(ctx).Table("action_artifact").
+		Where(opts.ToConds()).GroupBy(artifactGroupKey).Count(new(ActionArtifact))
+	if err != nil {
+		return nil, 0, err
+	}
+
+	session := db.GetEngine(ctx).Table("action_artifact").
+		Where(opts.ToConds()).GroupBy(artifactGroupKey).Select(artifactGroupColumns).OrderBy("min(id)")
+	if opts.Page > 0 && opts.PageSize > 0 {
+		session = session.Limit(opts.PageSize, (opts.Page-1)*opts.PageSize)
+	}
+	groups := make([]*ActionArtifact, 0, 10)
+	if err := session.Find(&groups); err != nil {
+		return nil, 0, err
+	}
+	return groups, count, nil
+}
+
+// GroupOf returns every row the given artifact is part of, which for a v4
+// artifact is itself and for a v1-v3 artifact is every file of it.
+func GroupOf(ctx context.Context, art *ActionArtifact) ([]*ActionArtifact, error) {
+	return GetArtifactsByRunAttemptAndName(ctx, art.RunID, art.RunAttemptID, art.ArtifactName)
 }
 
 // ListUploadedArtifactsMetaByRunAttempt returns uploaded artifacts meta scoped to a specific run and attempt.
