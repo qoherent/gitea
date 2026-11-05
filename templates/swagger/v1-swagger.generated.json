@@ -14897,6 +14897,59 @@
         }
       }
     },
+    "/repos/{owner}/{repo}/lfs/promote": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "tags": [
+          "repository"
+        ],
+        "summary": "Move files already committed as git blobs into Git LFS",
+        "operationId": "repoPromoteToLFS",
+        "parameters": [
+          {
+            "type": "string",
+            "description": "owner of the repo",
+            "name": "owner",
+            "in": "path",
+            "required": true
+          },
+          {
+            "type": "string",
+            "description": "name of the repo",
+            "name": "repo",
+            "in": "path",
+            "required": true
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/PromoteToLFSOptions"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/responses/PromoteToLFSResponse"
+          },
+          "403": {
+            "$ref": "#/responses/forbidden"
+          },
+          "404": {
+            "$ref": "#/responses/notFound"
+          },
+          "422": {
+            "$ref": "#/responses/validationError"
+          }
+        }
+      }
+    },
     "/repos/{owner}/{repo}/licenses": {
       "get": {
         "produces": [
@@ -25023,6 +25076,11 @@
           "type": "string",
           "x-go-name": "Name"
         },
+        "privileged_compute": {
+          "description": "PrivilegedCompute marks a runner whose jobs may only come from a team\nholding the organization's privileged-compute grant. Reported so that a\nsurface listing an organization's runners can say which of them are\nreachable by its members, which the labels alone never show.",
+          "type": "boolean",
+          "x-go-name": "PrivilegedCompute"
+        },
         "status": {
           "type": "string",
           "x-go-name": "Status"
@@ -26153,6 +26211,11 @@
           "type": "string",
           "x-go-name": "FromPath"
         },
+        "is_lfs_pointer": {
+          "description": "is_lfs_pointer commits the content as-is, as a Git-LFS pointer to an\nobject the repository already holds.",
+          "type": "boolean",
+          "x-go-name": "IsLFSPointer"
+        },
         "operation": {
           "description": "indicates what to do with the file: \"create\" for creating a new file, \"update\" for updating an existing file,\n\"upload\" for creating or updating a file, \"rename\" for renaming a file, and \"delete\" for deleting an existing file.",
           "type": "string",
@@ -27106,6 +27169,11 @@
           "type": "boolean",
           "x-go-name": "ForcePush"
         },
+        "is_lfs_pointer": {
+          "description": "is_lfs_pointer commits the content as-is, as a Git-LFS pointer to an\nobject the repository already holds.",
+          "type": "boolean",
+          "x-go-name": "IsLFSPointer"
+        },
         "message": {
           "description": "message (optional) is the commit message of the changes. If not supplied, a default message will be used",
           "type": "string",
@@ -27998,6 +28066,11 @@
           "x-go-enum-desc": "read RepoWritePermissionRead\nwrite RepoWritePermissionWrite\nadmin RepoWritePermissionAdmin",
           "x-go-name": "Permission"
         },
+        "privileged_compute": {
+          "description": "Whether this team's members may have Actions runs dispatched to runners\nmarked for privileged compute in this organization. Defaults to false,\nso a team made without naming it carries no grant.",
+          "type": "boolean",
+          "x-go-name": "PrivilegedCompute"
+        },
         "units": {
           "description": "Deprecated: This variable should be replaced by UnitsMap and will be dropped in later versions.",
           "type": "array",
@@ -28398,6 +28471,11 @@
         "disabled": {
           "type": "boolean",
           "x-go-name": "Disabled"
+        },
+        "privileged_compute": {
+          "description": "Whether this runner is reserved for an organization's privileged-compute\nteams. A site-admin decision and only for an organization-owned runner,\nas on the web form: the grant that gates it is per-organization, so a\nglobal or repository-scoped runner marked privileged is one no job can\never be dispatched to. Left unchanged when omitted.",
+          "type": "boolean",
+          "x-go-name": "PrivilegedCompute"
         }
       },
       "x-go-package": "gitea.dev/modules/structs"
@@ -29281,6 +29359,11 @@
           ],
           "x-go-enum-desc": "read RepoWritePermissionRead\nwrite RepoWritePermissionWrite\nadmin RepoWritePermissionAdmin",
           "x-go-name": "Permission"
+        },
+        "privileged_compute": {
+          "description": "Whether this team's members may have Actions runs dispatched to runners\nmarked for privileged compute in this organization. When omitted, the\ngrant is left unchanged -- a pointer rather than a bool, so that an\nedit which does not mention it cannot revoke it.",
+          "type": "boolean",
+          "x-go-name": "PrivilegedCompute"
         },
         "units": {
           "description": "Deprecated: This variable should be replaced by UnitsMap and will be dropped in later versions.",
@@ -31786,6 +31869,48 @@
       },
       "x-go-package": "gitea.dev/modules/structs"
     },
+    "PromoteToLFSOptions": {
+      "type": "object",
+      "title": "PromoteToLFSOptions names the files to move into Git LFS.",
+      "required": [
+        "files"
+      ],
+      "properties": {
+        "branch": {
+          "description": "The branch to read the blobs from and commit the pointers to. Defaults\nto the repository's default branch. One branch, because promoting is a\ncommit and a commit is on a branch.",
+          "type": "string",
+          "x-go-name": "Branch"
+        },
+        "files": {
+          "description": "Repository paths, on the branch below. A path already stored as a\npointer is skipped rather than refused.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "x-go-name": "Files"
+        },
+        "message": {
+          "type": "string",
+          "x-go-name": "Message"
+        }
+      },
+      "x-go-package": "gitea.dev/modules/structs"
+    },
+    "PromoteToLFSResponse": {
+      "type": "object",
+      "title": "PromoteToLFSResponse says which paths were moved.",
+      "properties": {
+        "moved": {
+          "description": "Empty when every path named was already stored as a pointer, which is a\nsuccess with nothing to do rather than a failure.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "x-go-name": "Moved"
+        }
+      },
+      "x-go-package": "gitea.dev/modules/structs"
+    },
     "PublicKey": {
       "description": "PublicKey publickey is a user key to push code to repository",
       "type": "object",
@@ -33226,6 +33351,11 @@
           "x-go-enum-desc": "none AccessLevelNameNone\nread AccessLevelNameRead\nwrite AccessLevelNameWrite\nadmin AccessLevelNameAdmin\nowner AccessLevelNameOwner",
           "x-go-name": "Permission"
         },
+        "privileged_compute": {
+          "description": "Whether this team's members may have Actions runs dispatched to runners\nmarked for privileged compute in this organization. Never granted to\nthe owner team automatically, unlike the other organization-wide flags:\nprivileged runners execute on hardware the instance owns.",
+          "type": "boolean",
+          "x-go-name": "PrivilegedCompute"
+        },
         "units": {
           "description": "Deprecated: This variable should be replaced by UnitsMap and will be dropped in later versions.",
           "type": "array",
@@ -33615,6 +33745,11 @@
           "description": "from_path (optional) is the path of the original file which will be moved/renamed to the path in the URL",
           "type": "string",
           "x-go-name": "FromPath"
+        },
+        "is_lfs_pointer": {
+          "description": "is_lfs_pointer commits the content as-is, as a Git-LFS pointer to an\nobject the repository already holds.",
+          "type": "boolean",
+          "x-go-name": "IsLFSPointer"
         },
         "message": {
           "description": "message (optional) is the commit message of the changes. If not supplied, a default message will be used",
@@ -34775,6 +34910,12 @@
         "items": {
           "$ref": "#/definitions/Project"
         }
+      }
+    },
+    "PromoteToLFSResponse": {
+      "description": "PromoteToLFSResponse",
+      "schema": {
+        "$ref": "#/definitions/PromoteToLFSResponse"
       }
     },
     "PublicKey": {
