@@ -560,7 +560,15 @@ func CreatePullReview(ctx *context.APIContext) {
 	}
 
 	// create review and associate all pending review comments
-	review, _, err := pull_service.SubmitReview(ctx, ctx.Doer, ctx.Repo.GitRepo, pr.Issue, reviewType, opts.Body, opts.CommitID, nil)
+	var review *issues_model.Review
+	if reviewType == issues_model.ReviewTypePending {
+		// A draft is kept, not submitted: submitting it as "pending" wrote a
+		// timeline entry and notified participants of a review only its
+		// author can see.
+		review, err = pull_service.SavePendingReview(ctx, ctx.Doer, pr.Issue, opts.Body, opts.CommitID)
+	} else {
+		review, _, err = pull_service.SubmitReview(ctx, ctx.Doer, ctx.Repo.GitRepo, pr.Issue, reviewType, opts.Body, opts.CommitID, nil)
+	}
 	if err != nil {
 		if errors.Is(err, pull_service.ErrSubmitReviewOnClosedPR) || issues_model.IsContentEmptyErr(err) {
 			ctx.APIError(http.StatusUnprocessableEntity, err.Error())

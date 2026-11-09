@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"gitea.dev/models/db"
 	issues_model "gitea.dev/models/issues"
@@ -289,6 +290,38 @@ func createCodeComment(ctx context.Context, doer *user_model.User, repo *repo_mo
 		Invalidated: invalidated,
 		Attachments: attachments,
 	})
+}
+
+// SavePendingReview keeps the doer's draft review of an issue, creating it
+// when there is none, and sets its summary when one is given. Nothing is
+// published: a draft is only its author's until it is submitted, so no
+// timeline entry is written and nobody is notified. SubmitReview with
+// ReviewTypePending did both, which told every participant about a review
+// they could not see.
+func SavePendingReview(ctx context.Context, doer *user_model.User, issue *issues_model.Issue, content, commitID string) (*issues_model.Review, error) {
+	review, err := issues_model.GetCurrentReview(ctx, doer, issue)
+	if err != nil && !issues_model.IsErrReviewNotExist(err) {
+		return nil, err
+	}
+	if review == nil {
+		if strings.TrimSpace(content) == "" {
+			return nil, issues_model.ContentEmptyErr{}
+		}
+		return issues_model.CreateReview(ctx, issues_model.CreateReviewOptions{
+			Type:     issues_model.ReviewTypePending,
+			Issue:    issue,
+			Reviewer: doer,
+			Content:  content,
+			CommitID: commitID,
+		})
+	}
+	if strings.TrimSpace(content) != "" {
+		review.Content = content
+		if _, err := db.GetEngine(ctx).ID(review.ID).Cols("content").Update(review); err != nil {
+			return nil, err
+		}
+	}
+	return review, nil
 }
 
 // SubmitReview creates a review out of the existing pending review or creates a new one if no pending review exist

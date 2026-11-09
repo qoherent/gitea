@@ -118,6 +118,9 @@ func testAPIPullReviewGeneral(t *testing.T) {
 	assert.EqualValues(t, 6, review.ID)
 	assert.EqualValues(t, "PENDING", review.State)
 	assert.Equal(t, 3, review.CodeCommentsCount)
+	// A draft is its author's alone: it writes no timeline entry, which is
+	// also what notifying participants hangs off.
+	unittest.AssertNotExistsBean(t, &issues_model.Comment{ReviewID: review.ID, Type: issues_model.CommentTypeReview})
 
 	// test SubmitPullReview
 	req = NewRequestWithJSON(t, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/reviews/%d", repo.OwnerName, repo.Name, pullIssue.Index, review.ID), &api.SubmitPullReviewOptions{
@@ -129,6 +132,7 @@ func testAPIPullReviewGeneral(t *testing.T) {
 	assert.EqualValues(t, 6, review.ID)
 	assert.EqualValues(t, "APPROVED", review.State)
 	assert.Equal(t, 3, review.CodeCommentsCount)
+	unittest.AssertExistsAndLoadBean(t, &issues_model.Comment{ReviewID: review.ID, Type: issues_model.CommentTypeReview})
 
 	// test dismiss review
 	req = NewRequestWithJSON(t, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/reviews/%d/dismissals", repo.OwnerName, repo.Name, pullIssue.Index, review.ID), &api.DismissPullReviewOptions{
