@@ -82,7 +82,10 @@ func (r *mockRunner) doRegister(t *testing.T, name, token string, labels []strin
 }
 
 func (r *mockRunner) registerAsRepoRunner(t *testing.T, ownerName, repoName, runnerName string, labels []string, ephemeral bool) {
-	session := loginUser(t, ownerName)
+	// Asked for by a site administrator: this fork reserves registering a
+	// runner to them and to organizations granted privileged compute, so the
+	// repository's owner is refused. The runner is the repository's all the same.
+	session := loginUser(t, "user1")
 	token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeWriteRepository)
 	req := NewRequest(t, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/actions/runners/registration-token", ownerName, repoName)).AddTokenAuth(token)
 	resp := MakeRequest(t, req, http.StatusOK)

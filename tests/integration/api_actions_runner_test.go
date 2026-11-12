@@ -181,7 +181,13 @@ func testActionsRunnerOwner(t *testing.T) {
 	t.Run("Access", func(t *testing.T) {
 		userUsername := "user2"
 		token := getUserToken(t, userUsername, auth_model.AccessTokenScopeWriteOrganization)
+		// This fork reserves registering a runner to site administrators and
+		// organizations granted privileged compute: the owner is refused, a
+		// site administrator is not.
 		req := NewRequest(t, "POST", "/api/v1/orgs/org3/actions/runners/registration-token").AddTokenAuth(token)
+		MakeRequest(t, req, http.StatusForbidden)
+		adminToken := getUserToken(t, "user1", auth_model.AccessTokenScopeWriteOrganization)
+		req = NewRequest(t, "POST", "/api/v1/orgs/org3/actions/runners/registration-token").AddTokenAuth(adminToken)
 		tokenResp := MakeRequest(t, req, http.StatusOK)
 		registrationToken := DecodeJSON(t, tokenResp, &struct {
 			Token string `json:"token"`
@@ -318,7 +324,11 @@ func testActionsRunnerRepo(t *testing.T) {
 	t.Run("Access", func(t *testing.T) {
 		userUsername := "user2"
 		token := getUserToken(t, userUsername, auth_model.AccessTokenScopeWriteRepository)
+		// The owner is refused here too; see the organization's Access above.
 		req := NewRequest(t, "POST", "/api/v1/repos/user2/repo1/actions/runners/registration-token").AddTokenAuth(token)
+		MakeRequest(t, req, http.StatusForbidden)
+		adminToken := getUserToken(t, "user1", auth_model.AccessTokenScopeWriteRepository)
+		req = NewRequest(t, "POST", "/api/v1/repos/user2/repo1/actions/runners/registration-token").AddTokenAuth(adminToken)
 		tokenResp := MakeRequest(t, req, http.StatusOK)
 		registrationToken := DecodeJSON(t, tokenResp, &struct {
 			Token string `json:"token"`
@@ -381,7 +391,9 @@ func testActionsRunnerRepo(t *testing.T) {
 		require.NoError(t, repo_service.TeamAddRepository(t.Context(), adminTeam, orgRepo))
 		token := getUserToken(t, "user28", auth_model.AccessTokenScopeWriteRepository)
 		req := NewRequest(t, "POST", "/api/v1/repos/org3/repo3/actions/runners/registration-token").AddTokenAuth(token)
-		MakeRequest(t, req, http.StatusOK)
+		// Admin of the repository through a team, which upstream admits; this
+		// fork does not, since org3 holds no privileged-compute grant.
+		MakeRequest(t, req, http.StatusForbidden)
 	})
 
 	t.Run("DeleteReadScopeForbidden", func(t *testing.T) {
