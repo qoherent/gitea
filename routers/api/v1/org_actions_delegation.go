@@ -44,6 +44,14 @@ import (
 // members, its teams and its repositories are all still owner-only.
 func reqOrgActionsManagement() func(ctx *context.APIContext) {
 	return func(ctx *context.APIContext) {
+		// Before anything that admits: managing an organization's Actions
+		// reaches its private repositories' runners, secrets and variables,
+		// which a public-only token must never touch. reqOrgOwnership, which
+		// this replaces, refuses one first for the same reason -- and without
+		// this, a site administrator's public-only token passed straight through.
+		if rejectPublicOnly()(ctx); ctx.Written() {
+			return
+		}
 		if ctx.IsUserSiteAdmin() {
 			return
 		}
