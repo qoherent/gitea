@@ -38,6 +38,34 @@ func UserData(ctx context.Context, user *user_model.User) (data [][]byte) {
 	return data
 }
 
+// Current returns the event to send for a broker payload: for an event that
+// carries a whole piece of state -- the unread count, the stopwatches -- that
+// state read now, not the copy read when the event was published.
+//
+// A payload is read at publish time and can sit in a connection's queue while a
+// newer snapshot is read and sent, as on a reconnect, where the snapshot read
+// races the events published around it. Forwarded as it was, the older state
+// arrived second and replaced the newer one, with nothing on either side to
+// say which was which. Read at send time, whatever is sent is the latest there
+// is, so the order of sends cannot make state go backwards. Other events are
+// returned unchanged.
+func Current(ctx context.Context, user *user_model.User, brokerPayload []byte) []byte {
+	_, eventData, _ := bytes.Cut(brokerPayload, []byte("\n"))
+	var event struct {
+		EventType string `json:"eventType"`
+	}
+	if json.Unmarshal(eventData, &event) != nil {
+		return brokerPayload
+	}
+	switch event.EventType {
+	case eventNotificationCount:
+		return notificationCountEvent(ctx, user.ID)
+	case eventStopwatches:
+		return stopwatchesEvent(ctx, user)
+	}
+	return brokerPayload
+}
+
 func EventForSession(brokerPayload []byte, sessionID string) []byte {
 	target, eventData, _ := bytes.Cut(brokerPayload, []byte("\n"))
 	if len(target) > 0 && string(target) != sessionID {

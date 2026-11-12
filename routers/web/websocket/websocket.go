@@ -64,7 +64,9 @@ func Serve(ctx *context.Context) {
 	defer pingTicker.Stop()
 
 	send := func(brokerPayload []byte) error {
-		eventDataBytes := websocket_service.EventForSession(brokerPayload, sessionID)
+		// State is read as it is sent, so an event queued before a newer
+		// snapshot cannot replace it (websocket_service.Current).
+		eventDataBytes := websocket_service.EventForSession(websocket_service.Current(wsCtx, ctx.Doer, brokerPayload), sessionID)
 		if eventDataBytes == nil {
 			return nil
 		}
