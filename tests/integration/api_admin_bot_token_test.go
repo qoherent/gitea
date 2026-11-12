@@ -52,6 +52,19 @@ func TestAPIAdminManagesABotsTokens(t *testing.T) {
 		unittest.AssertNotExistsBean(t, &auth_model.AccessToken{ID: created.ID})
 	})
 
+	t.Run("ListedAsABot", func(t *testing.T) {
+		resp := MakeRequest(t, NewRequest(t, "GET", "/api/v1/admin/users?type=Bot&limit=50").AddTokenAuth(admin), http.StatusOK)
+		bots := DecodeJSON(t, resp, []*api.User{})
+		require.Len(t, bots, 1)
+		assert.Equal(t, "user4", bots[0].UserName)
+		// People are what the listing has always meant.
+		resp = MakeRequest(t, NewRequest(t, "GET", "/api/v1/admin/users?limit=50").AddTokenAuth(admin), http.StatusOK)
+		for _, person := range DecodeJSON(t, resp, []*api.User{}) {
+			assert.NotEqual(t, "user4", person.UserName)
+		}
+		MakeRequest(t, NewRequest(t, "GET", "/api/v1/admin/users?type=Robot").AddTokenAuth(admin), http.StatusUnprocessableEntity)
+	})
+
 	t.Run("NotBroaderThanTheCaller", func(t *testing.T) {
 		MakeRequest(t, NewRequestWithJSON(t, "POST", "/api/v1/admin/users/user4/tokens", api.CreateAccessTokenOption{
 			Name:   "too-broad",

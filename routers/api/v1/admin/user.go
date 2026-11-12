@@ -455,6 +455,11 @@ func SearchUsers(ctx *context.APIContext) {
 	//   in: query
 	//   description: filter login prohibited users
 	//   type: boolean
+	// - name: type
+	//   in: query
+	//   description: which accounts to list, people (`User`, the default) or bots (`Bot`)
+	//   type: string
+	//   enum: [User, Bot]
 	// responses:
 	//   "200":
 	//     "$ref": "#/responses/UserList"
@@ -479,9 +484,21 @@ func SearchUsers(ctx *context.APIContext) {
 		return
 	}
 
+	// People by default, as before; bots only when asked for, since the admin
+	// UI can already list them and an API client had no way to.
+	accountType := user_model.UserTypeIndividual
+	switch api.UserTypeString(ctx.FormString("type")) {
+	case "", api.UserTypeStringUser:
+	case api.UserTypeStringBot:
+		accountType = user_model.UserTypeBot
+	default:
+		ctx.APIError(http.StatusUnprocessableEntity, "invalid type")
+		return
+	}
+
 	searchOpts := user_model.SearchUserOptions{
 		Actor:         ctx.Doer,
-		Types:         []user_model.UserType{user_model.UserTypeIndividual},
+		Types:         []user_model.UserType{accountType},
 		LoginName:     ctx.FormTrim("login_name"),
 		SourceID:      ctx.FormInt64("source_id"),
 		Keyword:       ctx.FormTrim("q"),
