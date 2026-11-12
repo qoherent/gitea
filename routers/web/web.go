@@ -897,9 +897,19 @@ func registerWebRoutes(m *web.Router, webAuth *AuthMiddleware) {
 	}, adminReq, ctxDataSet(reqctx.ContextData{"EnableOAuth2": setting.OAuth2.Enabled, "EnablePackages": setting.Packages.Enabled}))
 	// ***** END: Admin *****
 
+	// tokens only authenticate feeds, the other variants render data outside any token scope
+	allowBasicForFeeds := types.PreMiddlewareProvider(func(next http.Handler) http.Handler {
+		nextWithBasic := webAuth.AllowBasic(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if isFeed, _ := feed.GetFeedType(req.URL.Path, req); isFeed {
+				nextWithBasic.ServeHTTP(w, req)
+			} else {
+				next.ServeHTTP(w, req)
+			}
+		})
+	})
 	m.Group("", func() {
-		// it handles "username.rss" in the handler, so allow basic auth as other rss/atom routes
-		m.Get("/{username}", webAuth.AllowBasic, user.UsernameSubRoute)
+		m.Get("/{username}", allowBasicForFeeds, user.UsernameSubRoute)
 		m.Methods("GET, OPTIONS", "/attachments/{uuid}", optionsCorsHandler(), webAuth.AllowBasic, webAuth.AllowOAuth2, repo.GetAttachment)
 	}, optSignIn)
 
@@ -1361,7 +1371,7 @@ func registerWebRoutes(m *web.Router, webAuth *AuthMiddleware) {
 					m.Post("/add", repo.AddDependency)
 					m.Post("/delete", repo.RemoveDependency)
 				})
-				m.Combo("/comments").Post(repo.MustAllowUserComment, web.Bind[*forms.CreateCommentForm](), repo.NewComment)
+				m.Combo("/comments").Post(web.Bind[*forms.CreateCommentForm](), repo.NewComment)
 				m.Group("/times", func() {
 					m.Post("/add", web.Bind[*forms.AddTimeManuallyForm](), repo.AddTimeManually)
 					m.Post("/{timeid}/delete", repo.DeleteTime)
@@ -1380,7 +1390,7 @@ func registerWebRoutes(m *web.Router, webAuth *AuthMiddleware) {
 			})
 
 			m.Post("/attachments", repo.UploadIssueAttachment)
-			m.Post("/attachments/remove", repo.DeleteAttachment)
+			m.Post("/attachments/remove", repo.DeletePendingAttachment)
 
 			m.Post("/labels", reqRepoIssuesOrPullsWriter, repo.UpdateIssueLabel)
 			m.Post("/milestone", reqRepoIssuesOrPullsWriter, repo.UpdateIssueMilestone)
@@ -1508,7 +1518,7 @@ func registerWebRoutes(m *web.Router, webAuth *AuthMiddleware) {
 			m.Post("/generate-notes", web.Bind[*forms.GenerateReleaseNotesForm](), repo.GenerateReleaseNotes)
 			m.Post("/delete", repo.DeleteRelease)
 			m.Post("/attachments", repo.UploadReleaseAttachment)
-			m.Post("/attachments/remove", repo.DeleteAttachment)
+			m.Post("/attachments/remove", repo.DeletePendingAttachment)
 		}, reqSignIn, context.RepoMustNotBeArchived(), reqRepoReleaseWriter)
 	}, optSignIn, context.RepoAssignment, repo.MustBeNotEmpty, reqRepoReleaseReader)
 	// end "/{username}/{reponame}": repo releases

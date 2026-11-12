@@ -27848,6 +27848,9 @@
     "CreatePullReviewComment": {
       "description": "CreatePullReviewComment represent a review comment for creation api",
       "type": "object",
+      "required": [
+        "path"
+      ],
       "properties": {
         "body": {
           "type": "string",

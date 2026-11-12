@@ -125,6 +125,12 @@ func CreateCodeComment(ctx context.Context, doer *user_model.User, gitRepo *git.
 
 	// Comments that are replies don't require a review header to show up in the issue view
 	if !pendingReview && existsReview {
+		if replyReview, err := issues_model.GetReviewByID(ctx, replyReviewID); err != nil {
+			return nil, err
+		} else if replyReview.IssueID != issue.ID || (replyReview.Type == issues_model.ReviewTypePending && replyReview.ReviewerID != doer.ID) {
+			return nil, issues_model.ErrReviewNotExist{ID: replyReviewID}
+		}
+
 		if err = issue.LoadRepo(ctx); err != nil {
 			return nil, err
 		}
@@ -324,6 +330,9 @@ func SubmitReview(ctx context.Context, doer *user_model.User, gitRepo *git.Repos
 	review, comm, err := issues_model.SubmitReview(ctx, doer, issue, reviewType, content, commitID, stale, attachmentUUIDs)
 	if err != nil {
 		return nil, nil, err
+	}
+	if reviewType == issues_model.ReviewTypePending {
+		return review, nil, nil
 	}
 
 	mentions, err := issues_model.FindAndUpdateIssueMentions(ctx, issue, doer, comm.Content)
