@@ -173,10 +173,16 @@ func createIssueNotification(ctx context.Context, userID int64, issue *issues_mo
 	return db.Insert(ctx, notification)
 }
 
-func updateIssueNotification(ctx context.Context, userID, issueID, commentID, updatedByID int64) error {
+// updateIssueNotification reports whether there was a notification to update:
+// GetIssueNotification answers a zero row, not an error, when there is none,
+// and updating that row updates nothing.
+func updateIssueNotification(ctx context.Context, userID, issueID, commentID, updatedByID int64) (bool, error) {
 	notification, err := GetIssueNotification(ctx, userID, issueID)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if notification.ID == 0 {
+		return false, nil
 	}
 
 	// NOTICE: Only update comment id when the before notification on this issue is read, otherwise you may miss some old comments.
@@ -191,7 +197,7 @@ func updateIssueNotification(ctx context.Context, userID, issueID, commentID, up
 	}
 
 	_, err = db.GetEngine(ctx).ID(notification.ID).Cols(cols...).Update(notification)
-	return err
+	return err == nil, err
 }
 
 // GetIssueNotification return the notification about an issue
