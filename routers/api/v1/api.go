@@ -1908,6 +1908,11 @@ func Routes() *web.Router {
 					m.Get("/badges", admin.ListUserBadges)
 					m.Post("/badges", bind(api.UserBadgeOption{}), admin.AddUserBadges)
 					m.Delete("/badges", bind(api.UserBadgeOption{}), admin.DeleteUserBadges)
+					m.Group("/tokens", func() {
+						m.Get("", admin.ListBotAccessTokens)
+						m.Post("", bind(api.CreateAccessTokenOption{}), admin.CreateBotAccessToken)
+						m.Delete("/{id}", admin.DeleteBotAccessToken)
+					})
 				}, context.UserAssignmentAPI())
 			})
 			m.Group("/emails", func() {

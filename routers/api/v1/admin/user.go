@@ -567,3 +567,118 @@ func RenameUser(ctx *context.APIContext) {
 	}
 	ctx.Status(http.StatusNoContent)
 }
+
+// requireBot refuses an account that is not a bot. An administrator manages a
+// bot's tokens because a bot has no password to sign in and manage its own;
+// anyone else's tokens stay theirs.
+func requireBot(ctx *context.APIContext) bool {
+	if !ctx.ContextUser.IsTypeBot() {
+		ctx.APIError(http.StatusUnprocessableEntity, "only a bot account's tokens are managed by an administrator")
+		return false
+	}
+	return true
+}
+
+// ListBotAccessTokens lists a bot account's access tokens
+func ListBotAccessTokens(ctx *context.APIContext) {
+	// swagger:operation GET /admin/users/{username}/tokens admin adminListBotTokens
+	// ---
+	// summary: List a bot account's access tokens
+	// produces:
+	// - application/json
+	// parameters:
+	// - name: username
+	//   in: path
+	//   description: username of the bot
+	//   type: string
+	//   required: true
+	// - name: page
+	//   in: query
+	//   description: page number of results to return (1-based)
+	//   type: integer
+	// - name: limit
+	//   in: query
+	//   description: page size of results
+	//   type: integer
+	// responses:
+	//   "200":
+	//     "$ref": "#/responses/AccessTokenList"
+	//   "403":
+	//     "$ref": "#/responses/forbidden"
+	//   "404":
+	//     "$ref": "#/responses/notFound"
+	//   "422":
+	//     "$ref": "#/responses/validationError"
+	if requireBot(ctx) {
+		user.ListAccessTokens(ctx)
+	}
+}
+
+// CreateBotAccessToken creates an access token for a bot account
+func CreateBotAccessToken(ctx *context.APIContext) {
+	// swagger:operation POST /admin/users/{username}/tokens admin adminCreateBotToken
+	// ---
+	// summary: Create an access token for a bot account
+	// description: The admin UI's bot token panel, for a client that holds no password. A
+	//   token-authenticated caller may not mint a token broader than its own.
+	// consumes:
+	// - application/json
+	// produces:
+	// - application/json
+	// parameters:
+	// - name: username
+	//   in: path
+	//   description: username of the bot
+	//   type: string
+	//   required: true
+	// - name: body
+	//   in: body
+	//   schema:
+	//     "$ref": "#/definitions/CreateAccessTokenOption"
+	// responses:
+	//   "201":
+	//     "$ref": "#/responses/AccessToken"
+	//   "400":
+	//     "$ref": "#/responses/error"
+	//   "403":
+	//     "$ref": "#/responses/forbidden"
+	//   "404":
+	//     "$ref": "#/responses/notFound"
+	//   "422":
+	//     "$ref": "#/responses/validationError"
+	if requireBot(ctx) {
+		user.CreateAccessToken(ctx)
+	}
+}
+
+// DeleteBotAccessToken deletes one of a bot account's access tokens
+func DeleteBotAccessToken(ctx *context.APIContext) {
+	// swagger:operation DELETE /admin/users/{username}/tokens/{id} admin adminDeleteBotToken
+	// ---
+	// summary: Delete one of a bot account's access tokens
+	// produces:
+	// - application/json
+	// parameters:
+	// - name: username
+	//   in: path
+	//   description: username of the bot
+	//   type: string
+	//   required: true
+	// - name: id
+	//   in: path
+	//   description: token to be deleted, identified by ID and if not available by name
+	//   type: string
+	//   required: true
+	// responses:
+	//   "204":
+	//     "$ref": "#/responses/empty"
+	//   "403":
+	//     "$ref": "#/responses/forbidden"
+	//   "404":
+	//     "$ref": "#/responses/notFound"
+	//   "422":
+	//     "$ref": "#/responses/validationError"
+	if requireBot(ctx) {
+		user.DeleteAccessToken(ctx)
+	}
+}
