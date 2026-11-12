@@ -169,10 +169,12 @@ func CreateOrUpdateIssueNotifications(ctx context.Context, issueID, commentID, n
 		}
 
 		if notificationExists(notifications, issue.ID, userID) {
-			err = updateIssueNotification(ctx, userID, issue.ID, commentID, notificationAuthorID)
+			_, err = updateIssueNotification(ctx, userID, issue.ID, commentID, notificationAuthorID)
 		} else {
 			if err = createIssueNotification(ctx, userID, issue, commentID, notificationAuthorID); err != nil {
-				if errUpdate := updateIssueNotification(ctx, userID, issue.ID, commentID, notificationAuthorID); errUpdate == nil {
+				// Another writer may have created it first; the insert's error
+				// stands unless there really is a notification now to update.
+				if updated, errUpdate := updateIssueNotification(ctx, userID, issue.ID, commentID, notificationAuthorID); errUpdate == nil && updated {
 					err = nil
 				}
 			}
