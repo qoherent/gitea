@@ -900,16 +900,6 @@
             "description": "filter login prohibited users",
             "name": "is_prohibit_login",
             "in": "query"
-          },
-          {
-            "enum": [
-              "User",
-              "Bot"
-            ],
-            "type": "string",
-            "description": "which accounts to list, people (`User`, the default) or bots (`Bot`)",
-            "name": "type",
-            "in": "query"
           }
         ],
         "responses": {

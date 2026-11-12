@@ -12134,18 +12134,6 @@
             "schema": {
               "type": "boolean"
             }
-          },
-          {
-            "description": "which accounts to list, people (`User`, the default) or bots (`Bot`)",
-            "in": "query",
-            "name": "type",
-            "schema": {
-              "enum": [
-                "User",
-                "Bot"
-              ],
-              "type": "string"
-            }
           }
         ],
         "responses": {
