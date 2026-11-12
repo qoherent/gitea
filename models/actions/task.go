@@ -263,22 +263,12 @@ var pickTaskBatchSize = 100
 // job #1) does not leave the remaining jobs permanently unassigned.
 // @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute logic
 // @sigil implements models/actions/privileged-compute.sigil::PrivilegedCompute::DispatchDecision interface
-func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask, bool, error) {
+func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (task *ActionTask, cancelledJobs []*ActionRunJob, err error) {
 	if db.InTransaction(ctx) {
-		return nil, false, errors.New("CreateTaskForRunner must not be called within a database transaction")
+		return nil, nil, errors.New("CreateTaskForRunner must not be called within a database transaction")
 	}
-	e := db.GetEngine(ctx)
 
-	jobCond := builder.NewCond()
-	if runner.RepoID != 0 {
-		jobCond = builder.Eq{"repo_id": runner.RepoID}
-	} else if runner.OwnerID != 0 {
-		jobCond = builder.In("repo_id", builder.Select("`repository`.id").From("repository").
-			Join("INNER", "repo_unit", "`repository`.id = `repo_unit`.repo_id").
-			Where(builder.Eq{"`repository`.owner_id": runner.OwnerID, "`repo_unit`.type": unit.TypeActions}))
-	}
-	baseCond := builder.Eq{"task_id": 0, "status": StatusWaiting, "is_reusable_caller": false}.And(jobCond)
-
+	var privileged builder.Cond
 	if runner.PrivilegedCompute {
 		// Scope alone is the wrong gate for a privileged runner: it asks which
 		// repository the run belongs to, when the question is who triggered it.
@@ -291,7 +281,7 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 			// a row that arrives another way -- a direct database write, some
 			// future registration path -- from dispatching anyway.
 			log.Warn("actions: runner %d (%q) is marked privileged but has no owning organization, so it will be given no jobs", runner.ID, runner.Name)
-			return nil, false, nil
+			return nil, nil, nil
 		}
 		// Who holds the grant in this runner's organization. Built twice
 		// because the condition below asks it of two different records.
@@ -313,17 +303,17 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 		//
 		// A job with no attempt predates ActionRunAttempt, and the run's own
 		// trigger is the only answer there is for it.
-		baseCond = baseCond.And(builder.Or(
-			builder.In("run_attempt_id",
+		privileged = builder.Or(
+			builder.In("`action_run_job`.run_attempt_id",
 				builder.Select("id").From("action_run_attempt").
 					Where(builder.In("trigger_user_id", granted()))),
 			builder.And(
-				builder.Eq{"run_attempt_id": 0},
-				builder.In("run_id",
+				builder.Eq{"`action_run_job`.run_attempt_id": 0},
+				builder.In("`action_run_job`.run_id",
 					builder.Select("id").From("action_run").
 						Where(builder.In("trigger_user_id", granted()))),
 			),
-		))
+		)
 	}
 
 	// A label reserved to a privileged runner is honoured at the point a job is
@@ -331,7 +321,7 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 	// reserved label another way must still not receive that work.
 	reserved, err := reservedPrivilegedLabels(ctx, runner)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, err
 	}
 
 	// TODO: a more efficient way to filter labels
@@ -343,17 +333,20 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 	var cursorUpdated timeutil.TimeStamp
 	var cursorID int64
 	for {
-		cond := baseCond
+		sess := JobQueueOptions{RepoID: runner.RepoID, OwnerID: runner.OwnerID, Status: StatusWaiting}.session(ctx)
+		if privileged != nil {
+			sess.And(privileged)
+		}
 		if cursorID > 0 {
-			cond = cond.And(builder.Or(
+			sess.And(builder.Or(
 				builder.Gt{"updated": cursorUpdated},
 				builder.And(builder.Eq{"updated": cursorUpdated}, builder.Gt{"id": cursorID}),
 			))
 		}
 
 		var jobs []*ActionRunJob
-		if err := e.Where(cond).Asc("updated", "id").Limit(pickTaskBatchSize).Find(&jobs); err != nil {
-			return nil, false, err
+		if err := sess.Asc("updated", "id").Limit(pickTaskBatchSize).Find(&jobs); err != nil {
+			return nil, cancelledJobs, err
 		}
 		// A short page means no waiting jobs remain beyond it.
 		isLastPage := len(jobs) < pickTaskBatchSize
@@ -369,33 +362,43 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 			if claimsReservedLabel(reserved, v.RunsOn) {
 				continue
 			}
-			task, ok, err := claimJobForRunner(ctx, runner, v)
-			if err != nil {
-				return nil, false, err
+			task, cancelled, err := claimJobForRunner(ctx, runner, v)
+			if cancelled {
+				cancelledJobs = append(cancelledJobs, v)
 			}
-			if ok {
-				return task, true, nil
+			if err != nil || task != nil {
+				return task, cancelledJobs, err
 			}
-			// Another runner claimed this job concurrently; try the next one.
+			// Another runner claimed this job concurrently, or it was cancelled. Try the next one.
 		}
 
 		if isLastPage {
-			return nil, false, nil
+			return nil, cancelledJobs, nil
 		}
 	}
 }
 
 // claimJobForRunner attempts to atomically claim job for runner inside its own
-// transaction. Returns (task, true, nil) on success, or (nil, false, nil) when
-// another runner wins the optimistic-lock race (the caller should try the next
-// candidate job).
+// transaction. Returns the task on success, cancelled when the job's repository
+// has Actions disabled, or neither when another runner wins the optimistic-lock
+// race (the caller should try the next candidate job).
 func claimJobForRunner(ctx context.Context, runner *ActionRunner, job *ActionRunJob) (*ActionTask, bool, error) {
 	var resultTask *ActionTask
+	var cancelled bool
 
 	err := db.WithTx(ctx, func(ctx context.Context) error {
 		e := db.GetEngine(ctx)
 
 		if err := job.LoadAttributes(ctx); err != nil {
+			return err
+		}
+		if err := job.Run.Repo.LoadUnits(ctx); err != nil {
+			return err
+		}
+		if !job.Run.Repo.UnitEnabled(ctx, unit.TypeActions) {
+			job.Status, job.Stopped = StatusCancelled, timeutil.TimeStampNow()
+			affected, err := UpdateRunJob(ctx, job, builder.Eq{"task_id": 0, "status": StatusWaiting}, "status", "stopped")
+			cancelled = err == nil && affected == 1
 			return err
 		}
 
@@ -463,13 +466,10 @@ func claimJobForRunner(ctx context.Context, runner *ActionRunner, job *ActionRun
 		return nil
 	})
 
-	if errors.Is(err, errJobAlreadyClaimed) {
-		return nil, false, nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, errJobAlreadyClaimed) {
 		return nil, false, err
 	}
-	return resultTask, true, nil
+	return resultTask, cancelled, nil
 }
 
 // ReleaseTaskForRunner reverts a freshly-claimed but undelivered task: it deletes
