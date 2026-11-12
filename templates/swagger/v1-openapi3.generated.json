@@ -4621,6 +4621,9 @@
             "x-go-name": "Path"
           }
         },
+        "required": [
+          "path"
+        ],
         "type": "object",
         "x-go-package": "gitea.dev/modules/structs"
       },
@@ -12589,6 +12592,145 @@
           }
         },
         "summary": "Create a repository on behalf of a user",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/users/{username}/tokens": {
+      "get": {
+        "operationId": "adminListBotTokens",
+        "parameters": [
+          {
+            "description": "username of the bot",
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "page number of results to return (1-based)",
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "page size of results",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/AccessTokenList"
+          },
+          "403": {
+            "$ref": "#/components/responses/forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/notFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/validationError"
+          }
+        },
+        "summary": "List a bot account's access tokens",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "The admin UI's bot token panel, for a client that holds no password. A token-authenticated caller may not mint a token broader than its own.",
+        "operationId": "adminCreateBotToken",
+        "parameters": [
+          {
+            "description": "username of the bot",
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAccessTokenOption"
+              }
+            }
+          },
+          "x-originalParamName": "body"
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/AccessToken"
+          },
+          "400": {
+            "$ref": "#/components/responses/error"
+          },
+          "403": {
+            "$ref": "#/components/responses/forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/notFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/validationError"
+          }
+        },
+        "summary": "Create an access token for a bot account",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/users/{username}/tokens/{id}": {
+      "delete": {
+        "operationId": "adminDeleteBotToken",
+        "parameters": [
+          {
+            "description": "username of the bot",
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "token to be deleted, identified by ID and if not available by name",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "$ref": "#/components/responses/empty"
+          },
+          "403": {
+            "$ref": "#/components/responses/forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/notFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/validationError"
+          }
+        },
+        "summary": "Delete one of a bot account's access tokens",
         "tags": [
           "admin"
         ]

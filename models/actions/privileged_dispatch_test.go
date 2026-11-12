@@ -97,9 +97,8 @@ func TestPrivilegedRunnerIsGivenNothingWithoutTheGrant(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, granted, "the fixture must start without the grant or this proves nothing")
 
-	task, ok, err := CreateTaskForRunner(t.Context(), runner)
+	task, _, err := CreateTaskForRunner(t.Context(), runner)
 	require.NoError(t, err)
-	assert.False(t, ok)
 	assert.Nil(t, task)
 }
 
@@ -117,9 +116,8 @@ func TestPrivilegedRunnerIsGivenTheJobOnceTheTeamIsGranted(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, granted)
 
-	task, ok, err := CreateTaskForRunner(t.Context(), runner)
+	task, _, err := CreateTaskForRunner(t.Context(), runner)
 	require.NoError(t, err)
-	require.True(t, ok)
 	require.NotNil(t, task)
 
 	claimed := unittest.AssertExistsAndLoadBean(t, &ActionRunJob{ID: job.ID})
@@ -137,9 +135,8 @@ func TestPrivilegedRunnerWithNoOrganizationIsGivenNothing(t *testing.T) {
 	grantTeam(t, privTeamID)
 	runner := insertRunner(t, "priv-noorg", 0, true, "gpu-box")
 
-	task, ok, err := CreateTaskForRunner(t.Context(), runner)
+	task, _, err := CreateTaskForRunner(t.Context(), runner)
 	require.NoError(t, err)
-	assert.False(t, ok)
 	assert.Nil(t, task)
 }
 
@@ -155,9 +152,8 @@ func TestUnprivilegedRunnerCannotTakeAReservedLabel(t *testing.T) {
 	insertRunner(t, "the-real-gpu-box", privOrgID, true, "gpu-box")
 	impostor := insertRunner(t, "impostor", privOrgID, false, "gpu-box")
 
-	task, ok, err := CreateTaskForRunner(t.Context(), impostor)
+	task, _, err := CreateTaskForRunner(t.Context(), impostor)
 	require.NoError(t, err)
-	assert.False(t, ok)
 	assert.Nil(t, task)
 
 	still := unittest.AssertExistsAndLoadBean(t, &ActionRunJob{ID: job.ID})
@@ -251,8 +247,7 @@ func TestARerunIsJudgedOnWhoAskedForIt(t *testing.T) {
 		Update(map[string]any{"run_attempt_id": attempt.ID})
 	require.NoError(t, err)
 
-	got, ok, err := CreateTaskForRunner(t.Context(), runner)
+	got, _, err := CreateTaskForRunner(t.Context(), runner)
 	require.NoError(t, err)
-	assert.False(t, ok, "a re-run asked for by somebody without the grant reached privileged hardware")
-	assert.Nil(t, got)
+	assert.Nil(t, got, "a re-run asked for by somebody without the grant reached privileged hardware")
 }

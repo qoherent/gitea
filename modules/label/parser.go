@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"gitea.dev/modules/options"
+	"gitea.dev/modules/util"
 
 	"go.yaml.in/yaml/v4"
 )
@@ -31,6 +32,14 @@ func IsErrTemplateLoad(err error) bool {
 
 func (err ErrTemplateLoad) Error() string {
 	return fmt.Sprintf("failed to load label template file %q: %v", err.TemplateFile, err.OriginalError)
+}
+
+// Unwrap marks a template that cannot be loaded as the request's fault -- it
+// names a template this instance does not have -- so APIErrorAuto answers 422
+// with the message rather than 500. CreateUserRepo's explicit check for this
+// error went when it moved to APIErrorAuto (#40095). The cause still unwraps.
+func (err ErrTemplateLoad) Unwrap() []error {
+	return []error{util.ErrUnprocessableContent, err.OriginalError}
 }
 
 // LoadTemplateFile loads the label template file by given file name, returns a slice of Label structs.

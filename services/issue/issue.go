@@ -290,7 +290,6 @@ func DeleteIssuesByRepoID(ctx context.Context, repoID int64) (attachmentPaths []
 		issues := make([]*issues_model.Issue, 0, db.DefaultMaxInSize)
 		if err := db.GetEngine(ctx).
 			Where("repo_id = ?", repoID).
-			OrderBy("id").
 			Limit(db.DefaultMaxInSize).
 			Find(&issues); err != nil {
 			return nil, err
@@ -331,4 +330,9 @@ func CanSelfChangeOrAccessContent(doer *user_model.User, doerPerm access_model.P
 		return false
 	}
 	return true
+}
+
+// IsLockedForDoer returns whether the lock keeps a doer with perm from commenting
+func IsLockedForDoer(issue *issues_model.Issue, perm access_model.Permission) bool {
+	return issue.IsLocked && !perm.CanWriteIssuesOrPulls(issue.IsPull)
 }
