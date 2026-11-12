@@ -52,7 +52,11 @@ func TestWebSocketSnapshotFollowsBacklog(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.CloseNow()
 
-	const sentinelCount = -2
+	// The end is marked by an event that carries no state: a state event is
+	// read again as it is sent (websocket_service.Current), so a sentinel
+	// count would arrive as the real one.
+	const sentinelType = "test-sentinel"
+	unread := unittest.GetCount(t, &activities_model.Notification{UserID: 2, Status: activities_model.NotificationStatusUnread})
 	lastCount := 0
 	for {
 		_, payload, err := conn.Read(t.Context())
@@ -63,17 +67,19 @@ func TestWebSocketSnapshotFollowsBacklog(t *testing.T) {
 		}
 		require.NoError(t, json.Unmarshal(payload, &event))
 		if event.EventType == "stopwatches" {
-			pubsub.DefaultBroker.Publish(pubsub.UserTopic(2), countEvent(sentinelCount))
+			pubsub.DefaultBroker.Publish(pubsub.UserTopic(2), []byte("\n"+`{"eventType":"`+sentinelType+`"}`))
 			continue
+		}
+		if event.EventType == sentinelType {
+			break
 		}
 		var data struct {
 			Count int `json:"count"`
 		}
 		require.NoError(t, json.Unmarshal(event.EventData, &data))
-		if data.Count == sentinelCount {
-			break
-		}
+		// Not only the last: no count older than the current one is ever sent.
+		assert.Equal(t, unread, data.Count, "a stale count reached the browser")
 		lastCount = data.Count
 	}
-	assert.Equal(t, unittest.GetCount(t, &activities_model.Notification{UserID: 2, Status: activities_model.NotificationStatusUnread}), lastCount)
+	assert.Equal(t, unread, lastCount)
 }
