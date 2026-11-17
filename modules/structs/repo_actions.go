@@ -244,6 +244,11 @@ type ActionRunner struct {
 	// surface listing an organization's runners can say which of them are
 	// reachable by its members, which the labels alone never show.
 	PrivilegedCompute bool `json:"privileged_compute"`
+	// Scope is the runner's registration scope: "global", "owner" or
+	// "repository". A global runner accepts jobs from every repository on the
+	// instance, matched on label text alone, which the listings cannot
+	// otherwise be used to detect.
+	Scope string `json:"scope"`
 }
 
 // EditActionRunnerOption represents the editable fields for a runner.
