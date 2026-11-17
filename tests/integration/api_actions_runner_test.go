@@ -58,6 +58,16 @@ func testActionsRunnerAdmin(t *testing.T) {
 	assert.Len(t, expectedRunner.Labels, 2)
 	assert.Equal(t, "runner_to_be_deleted", expectedRunner.Labels[0].Name)
 	assert.Equal(t, "linux", expectedRunner.Labels[1].Name)
+	// A runner with neither an owner nor a repository is global: it takes
+	// jobs from every repository on the instance, and the listing says so.
+	assert.Equal(t, "global", expectedRunner.Scope)
+	scopes := map[string]string{}
+	for _, entry := range runnerList.Entries {
+		scopes[entry.Name] = entry.Scope
+	}
+	assert.Equal(t, "owner", scopes["runner_to_be_deleted-user"])
+	assert.Equal(t, "owner", scopes["runner_to_be_deleted-org"])
+	assert.Equal(t, "repository", scopes["runner_to_be_deleted-repo1"])
 
 	req = newRunnerUpdateRequest(t, fmt.Sprintf("/api/v1/admin/actions/runners/%d", expectedRunner.ID), true).AddTokenAuth(token)
 	MakeRequest(t, req, http.StatusOK)
@@ -86,6 +96,7 @@ func testActionsRunnerAdmin(t *testing.T) {
 		assert.Equal(t, runnerEntry.Disabled, runner.Disabled)
 		assert.Equal(t, runnerEntry.Ephemeral, runner.Ephemeral)
 		assert.ElementsMatch(t, runnerEntry.Labels, runner.Labels)
+		assert.Equal(t, runnerEntry.Scope, runner.Scope)
 
 		req = NewRequest(t, "DELETE", fmt.Sprintf("/api/v1/admin/actions/runners/%d", runnerEntry.ID)).AddTokenAuth(token)
 		MakeRequest(t, req, http.StatusNoContent)

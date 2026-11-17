@@ -768,6 +768,7 @@ func ToActionRunner(ctx context.Context, runner *actions_model.ActionRunner) *ap
 	// than every key above, so adding it there makes gofmt realign all seven
 	// of upstream's lines, and a fork pays for those at every merge.
 	out.PrivilegedCompute = runner.PrivilegedCompute
+	out.Scope = string(runner.Scope())
 	return out
 }
 
